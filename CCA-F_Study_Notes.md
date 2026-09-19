@@ -1446,3 +1446,892 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 - ✅ **Start a new session, inject a structured summary of the previous interaction, then make fresh tool calls as needed**
 
 **Site's rationale reviewed:** The explanation for C (stale data after 4 hours → new session + structured summary + fresh tool calls) applies **word for word to B too**. The rejection of B is templated ("doesn't address the requirement… data may be stale"), yet B already makes fresh tool calls. The site gives no real difference, which confirms the question is flawed. Takeaway: the *concept* is what matters. If both appear on an exam, prefer the Exam Guide wording "inject".
+
+---
+
+## Practice Test 2 — Q61: Invoice Line Items vs. Grand Total Mismatch: Exam Rule of Thumb
+
+| Situation | Best approach |
+|---|---|
+| Extracted values must agree mathematically (line items sum vs. grand total), and mismatches come from **multiple independent causes** (OCR errors *and* model extraction mistakes) | **Add a `calculated_total` field (model sums the extracted line items) alongside the extracted `stated_total`/`grand_total`, with a flag (e.g. `is_total_consistent`) that routes mismatches to human review** |
+| Tempted to fix with few-shot examples of correctly-summing invoices | Trap: guidance only, no guarantee — doesn't address either root cause (OCR *or* model error) |
+| Tempted to auto-adjust line items proportionally to match the stated total | Trap: **silently corrupts data** — you don't know which value (line items or stated total) is actually wrong |
+| Tempted to add a second "validation" model to reconcile the two | Trap: extra cost/latency, and the second model can itself be wrong — arithmetic consistency is **deterministic** and doesn't need an LLM to check |
+
+**Tips:** Same pattern as the original invoice-totals question (Q1 of Practice Test 1) — whenever extracted values must satisfy a deterministic mathematical relationship (sum, subtotal + tax = total), build **self-verification into the schema**: extract both sides independently, compute the check in code, and flag disagreements for a human. Never auto-correct without evidence, and never delegate a deterministic check to a second probabilistic model.
+
+**Source check (official Exam Guide, Task Statement 4.3, 4.4):**
+- 4.3: "strict JSON schemas via tool use eliminate syntax errors but do not prevent semantic errors (e.g., line items that don't sum to total, values in wrong fields)"
+- 4.4: "Designing self-correction validation flows: extracting 'calculated_total' alongside 'stated_total' to flag discrepancies"
+
+### Example question (Practice Test 2, Q61 — answered correctly)
+
+**Q:** An extraction pipeline processes invoices and extracts line items, subtotals, tax amounts, and grand totals. During evaluation, in 18% of extractions the sum of extracted line item amounts doesn't match the extracted grand total — sometimes due to OCR errors in the source document, sometimes due to extraction mistakes by the model. Downstream accounting systems reject records with mismatched totals. What's the most effective approach to improve extraction reliability?
+
+- ❌ Add few-shot examples demonstrating invoices where extracted line items sum correctly to the stated total, encouraging the model to produce mathematically consistent extractions: guidance only, no guarantee — doesn't fix either the OCR-error cause or the model-mistake cause.
+- ❌ Implement post-processing that automatically adjusts line item amounts proportionally when their sum doesn't match the stated total: silently corrupts data — you don't know whether the line items or the stated total is the actually-wrong value.
+- ✅ **Add a `calculated_total` field where the model sums extracted line items alongside a `stated_total` field. Flag records for human review when values differ.**: deterministic self-check, preserves the original extracted data, routes only genuine mismatches to review.
+- ❌ Extract line items and totals independently, then use a separate validation model to reconcile discrepancies by determining which extracted values are most likely correct: another probabilistic model step, added cost/latency, and it can itself be wrong — arithmetic consistency should be checked deterministically in code, not guessed by another model.
+
+**Glossary (thuật ngữ):**
+- *self-verification* = tự kiểm chứng (mô hình tự tính toán và so sánh với giá trị đã trích xuất, không cần mô hình thứ hai để xác minh)
+- *deterministic* = tất định (kết quả tính toán luôn cố định, không phụ thuộc vào xác suất hay "phán đoán" của mô hình)
+- *calculated_total / stated_total* = tổng do model tự tính bằng cách cộng line items / tổng đã được trích xuất trực tiếp từ tài liệu gốc
+- *flag for human review* = gắn cờ đánh dấu để chuyển cho con người xem xét lại
+- *silently corrupt data* = âm thầm làm sai lệch dữ liệu (sửa dữ liệu mà không có bằng chứng đâu là giá trị đúng)
+- *root cause* = nguyên nhân gốc rễ (ở đây có 2 nguyên nhân độc lập: lỗi OCR và lỗi trích xuất của model)
+
+---
+
+## Practice Test 2 — Q62: Untested Code Paths in a 45-File Legacy Payment Module: Exam Rule of Thumb
+
+| Situation | Best approach |
+|---|---|
+| Mid-investigation (45-file legacy module), after only 8 files the agent is already less accurate — forgetting patterns, hasn't located all test files or traced critical flows | **Spawn subagents for specific remaining questions (e.g., "find all test files", "trace refund flow dependencies") while the main/coordinator agent preserves high-level understanding and combines results** |
+| Tempted to `/clear` + selectively re-read "critical files" + scratchpad | Trap: `/clear` throws away the 8 files' worth of findings already made, and re-reading refills the context with the same problem |
+| Tempted to switch to Grep for function names instead of reading full files | Trap: reduces *new* loading going forward, but does nothing to fix the context that is *already* degraded, and narrow Grep hits can't trace a full data/call flow |
+| Tempted to write a full summary report, clear context completely, use the report as the sole reference | Trap: discards the main coordinating context entirely; a report alone can't hold the same working detail as continuing to coordinate live, and this abandons the main agent's role instead of just offloading verbose exploration |
+
+**Tips:** Identical pattern to the "Context Filling Up Mid-Investigation" rule: mid-task, accuracy already dropping, and real work remains (untested paths still to find, flows still to trace) → **delegate the remaining work to subagent(s) with specific, targeted questions**, and let the coordinator keep the high-level thread instead of doing all the reading itself. This isolates the verbose file-reading into a subagent's disposable context while the main agent's own context stays clean enough to keep coordinating.
+
+**Source check (official Exam Guide, Task Statement 5.4):**
+- "Subagent delegation for isolating verbose exploration output while the main agent coordinates high-level understanding"
+- "Summarizing key findings from one exploration phase before spawning sub-agents for the next phase, injecting summaries into initial context"
+- Same knowledge point also covers: "Context degradation in extended sessions: models start giving inconsistent answers... rather than specific classes/patterns discovered earlier"
+
+### Example question (Practice Test 2, Q62 — answered correctly; near-duplicate of the 15-file payment-module question above)
+
+**Q:** An engineer asks your agent to identify untested code paths in a legacy payment processing module spanning 45 files. After reading the first 8 source files, the agent's responses are becoming noticeably less accurate — it's forgetting previously discussed code patterns and hasn't yet located all test files or traced critical payment flows. What's the most effective approach to complete this investigation?
+
+- ✅ **Spawn subagents to investigate specific questions (e.g., "find all test files for payment processing", "trace refund flow dependencies") while the main agent coordinates findings and preserves high-level understanding.**: clean context for the remaining reading, main agent keeps the coordinating thread and combines results — the standard fix for context degrading mid-investigation with work still remaining.
+- ❌ Clear context with `/clear`, then selectively re-read only the most critical files discovered so far, writing key findings to a scratchpad file that persists between context resets: `/clear` discards the findings from the 8 files already read, and re-reading them (even selectively) refills the context with the same accumulation problem.
+- ❌ Switch to using Grep to search for specific function names instead of reading full files, reducing the content loaded into context for remaining exploration: only slows *future* accumulation — it does nothing to fix the accuracy already lost, and narrow function-name matches can't trace a full payment flow across files.
+- ❌ Document all current findings in a summary report, clear context completely, then use that report as the sole reference for continuing the investigation: throws away the main coordinating context; a static report can't substitute for an agent that keeps orchestrating the rest of the investigation and integrating new findings.
+
+**Glossary (thuật ngữ):**
+- *context degradation* = suy giảm chất lượng ngữ cảnh (mô hình bắt đầu trả lời chung chung, quên chi tiết cụ thể đã tìm thấy trước đó, khi hội thoại/ngữ cảnh quá dài)
+- *subagent delegation* = giao việc cho subagent (một agent con được sinh ra để làm một phần việc cụ thể, tách khỏi ngữ cảnh chính)
+- *coordinator / main agent* = agent điều phối / agent chính (agent giữ vai trò tổng hợp, không tự đọc hết mọi chi tiết mà giao việc và tổng hợp kết quả)
+- *high-level understanding* = hiểu biết tổng quan/cấp cao (nắm được bức tranh lớn, không sa vào từng chi tiết nhỏ)
+- *isolating verbose output* = cô lập lượng output dài dòng (đẩy phần đọc/khám phá tốn nhiều ngữ cảnh sang subagent, để ngữ cảnh chính luôn gọn)
+- *scratchpad file* = tệp ghi chú tạm (dùng để lưu phát hiện chính, đọc lại khi cần, khác với việc xóa sạch ngữ cảnh)
+
+---
+
+## Practice Test 2 — Q63: Coordinator Narrates Delegation But Never Invokes Subagents: Exam Rule of Thumb
+
+| Situation | Best approach |
+|---|---|
+| Coordinator has correct AgentDefinitions for all subagents (descriptions, prompts, tool restrictions), correctly *reasons* about when to delegate ("I'll ask the web search agent..."), but **no subagent execution ever occurs**, and it proceeds as if delegation happened — no errors in logs | **The coordinator's `allowedTools` doesn't include `"Task"`, so it can reason about delegation but has no tool to actually spawn subagents** |
+| Tempted to blame subagent context isolation (task descriptions not reaching subagents) | Trap: irrelevant here — no subagent ever *runs*, so there's no context-forwarding problem to fix; this diagnosis assumes execution started, which it didn't |
+| Tempted to blame the system prompt not listing available subagent types | Trap: contradicted by the scenario itself — the coordinator clearly *knows* about the web search agent (it names it explicitly), so knowledge isn't the gap |
+| Tempted to blame `max_tokens` truncating the Task call | Trap: truncation would produce a cut-off/incomplete tool call or garbled output, not a clean, complete sentence describing delegation with zero errors in the logs |
+
+**Tips:** Same lesson as before: **knowing about a subagent (via AgentDefinitions/descriptions) is not the same as being able to invoke one.** `AgentDefinitions` describe *what* subagents exist; `allowedTools` decides *whether* the coordinator can call the `Task` tool that actually spawns them. When a coordinator narrates an action ("I'll ask X agent...") without a matching tool call ever appearing in the trace, and logs show no errors, the near-universal cause is a missing tool permission, not a reasoning, context-passing, or token-limit problem.
+
+**Source check (official Exam Guide, Task Statement 1.3):**
+- "The Task tool as the mechanism for spawning subagents, and the requirement that allowedTools must include 'Task' for a coordinator to invoke subagents"
+
+### Example question (Practice Test 2, Q63 — answered correctly; near-duplicate of the earlier "Coordinator Can't Delegate" question)
+
+**Q:** The coordinator agent has AgentDefinitions configured for all four specialized subagents, each with appropriate descriptions, prompts, and tool restrictions. During testing, you notice the coordinator correctly reasons about when to delegate — it generates messages like "I'll ask the web search agent to find sources on this topic" — but no subagent execution ever occurs. The coordinator then proceeds as if the delegation happened and continues with incomplete information. Logs show no errors. What is the most likely cause?
+
+- ❌ Subagent context isolation means task descriptions from the coordinator don't automatically reach subagents; you need to configure explicit context forwarding in ClaudeAgentOptions: irrelevant — no subagent ever executes at all, so there's nothing for context forwarding to fix.
+- ❌ The AgentDefinitions are configured correctly, but the coordinator's system prompt doesn't explicitly list the available subagent types, preventing the model from knowing they can be invoked: contradicted by the scenario — the coordinator clearly names the web search agent, so it does know about it.
+- ✅ **The coordinator's `allowedTools` configuration doesn't include "Task", so while it can reason about delegation, it cannot invoke the tool required to spawn subagents.**: matches the exact symptom — correct reasoning, no execution, no errors (there's no error because the model simply never attempts a disallowed tool call in a way that surfaces as one; it just narrates instead).
+- ❌ The coordinator's `max_tokens` setting is too low, causing the Task tool invocation to be truncated before the subagent type parameter can be specified: would show up as a truncated/malformed call or an error, not a clean narrative sentence with zero logged errors.
+
+**Glossary (thuật ngữ):**
+- *AgentDefinitions* = định nghĩa agent (mô tả subagent nào tồn tại: mô tả, prompt, giới hạn công cụ — nhưng không tự cấp quyền gọi)
+- *allowedTools* = danh sách công cụ được phép dùng (cấu hình quyết định coordinator được gọi công cụ nào, bao gồm cả "Task")
+- *Task tool* = công cụ Task (cơ chế thực sự dùng để "sinh ra"/gọi chạy một subagent — không có trong allowedTools thì không gọi được, dù agent có biết về subagent đó)
+- *narrate without invoking* = nói ra ý định nhưng không thực sự gọi (mô hình mô tả hành động bằng lời nhưng không có tool call tương ứng xảy ra)
+- *truncation* = bị cắt ngắn (do giới hạn max_tokens, khiến tool call không hoàn chỉnh — sẽ để lại dấu vết lỗi/không hoàn chỉnh, khác với tình huống câu hỏi này)
+
+---
+
+## Practice Test 2 — Q64: Query Routing by Complexity, "Diverse and Evolving" (confirms the disputed Q44 pattern)
+
+**Note:** This question is a near-duplicate of the disputed Q44 in Practice Test 1 ("Dynamic Query Routing by Complexity"), but here the platform's own answer key agrees with the Exam Guide (dynamic coordinator analysis = correct, fast-path bypass = explicitly marked wrong/"Sai"). This confirms the Exam Guide reading was right and the Q44 site's key was the outlier.
+
+| Situation | Best approach |
+|---|---|
+| Query distribution is **diverse and evolving** as users discover new applications; some queries are simple (single fact), others complex (comparative research) | **Coordinator analyzes each query and dynamically decides which subagents to invoke, based on its own assessment of that query's requirements** |
+| Simple fact queries currently traverse all subagents sequentially (40+ seconds, high token cost) while only complex queries actually need the full pipeline | Confirms the coordinator should skip unnecessary subagents per-query — but by *reasoning*, not by a fixed rule |
+| Tempted to build pattern-based routing (single-fact vs. comparative vs. analytical → predefined subagent combination) | Trap: rigid categories decided in advance; breaks as users discover new applications the categories don't anticipate |
+| Tempted to hard-code a fast-path that bypasses subagents entirely for "factual" questions, full pipeline for everything else | Trap (marked wrong here too): a static binary split — still routes *every* "other" query through the *complete* pipeline regardless of whether it actually needs all four subagents, and can't adapt as the query mix evolves |
+| Tempted to train a query-complexity classifier on labeled historical data | Trap: extra infrastructure, and a classifier trained on historical data can't anticipate *new* query types as usage evolves |
+
+**Tips:** The recurring exam signal is the phrase **"diverse/uneven and evolving."** Any solution that hard-codes categories, patterns, or a classifier trained on the past will break as new query shapes appear. The Exam Guide's answer is always the same shape: **the coordinator itself analyzes each query, per request, and dynamically chooses which subagents to invoke** — no predefined buckets, no static fast-track, no offline-trained classifier.
+
+**Source check (official Exam Guide, Task Statement 1.2):**
+- "The role of the coordinator in... deciding which subagents to invoke based on query complexity"
+- "Designing coordinator agents that analyze query requirements and dynamically select which subagents to invoke rather than always routing through the full pipeline"
+
+### Example question (Practice Test 2, Q64 — answered correctly; confirms the Q44 dispute resolution)
+
+**Q:** In production, you observe that simple fact-checking queries (e.g., "What year was the Paris Climate Agreement signed?") traverse all four subagents sequentially, consuming 40+ seconds and significant tokens per query. Complex comparative research benefits from the full pipeline. Your query distribution is diverse and evolving as users discover new applications. What's the most effective approach to optimize for varying query complexity?
+
+- ❌ Implement pattern-based routing that categorizes queries by structure (single-fact vs. comparative vs. analytical) and maps each category to a predefined subagent combination: rigid, predefined categories can't anticipate new query shapes as usage evolves.
+- ✅ **Have the coordinator analyze each query and dynamically decide which subagents to invoke based on its assessment of query requirements.**: adapts per query and as the distribution evolves — matches the Exam Guide's wording almost verbatim.
+- ❌ Create a fast-path for factual questions that bypasses subagents entirely, routing all other queries through the complete pipeline to ensure research thoroughness: a static binary rule; still forces *every* "other" query through the *full* pipeline even when it doesn't need all four subagents, and can't adapt to new query types.
+- ❌ Train a query complexity classifier on labeled historical data to predict optimal subagent combinations, retraining periodically as query patterns evolve: extra infrastructure and lag — a classifier is only as good as its (necessarily historical) training data, so it always trails genuinely new applications users discover.
+
+**Glossary (thuật ngữ):**
+- *dynamic routing / dynamically decide* = định tuyến động (coordinator tự đánh giá từng truy vấn tại thời điểm xử lý, không theo luật cố định lập sẵn)
+- *pattern-based routing* = định tuyến theo mẫu cố định (phân loại truy vấn theo cấu trúc đã biết trước rồi ánh xạ sang một tổ hợp subagent cố định — cứng nhắc, không thích ứng được)
+- *fast-path* = đường tắt (bỏ qua toàn bộ subagent cho một nhóm truy vấn được coi là "đơn giản" — vẫn là luật tĩnh, không phải suy luận theo từng truy vấn)
+- *query complexity classifier* = bộ phân loại độ phức tạp truy vấn (một mô hình huấn luyện riêng để đoán tổ hợp subagent tối ưu — có độ trễ vì luôn dựa trên dữ liệu lịch sử)
+- *diverse and evolving* = đa dạng và luôn thay đổi (từ khóa tín hiệu trong đề: bất kỳ giải pháp cố định/định trước nào đều là bẫy)
+
+---
+
+## Practice Test 2 — Q65: Uniform MCP Error Responses Cause Inconsistent Agent Behavior (near-duplicate of the isError lesson)
+
+| Situation | Best approach |
+|---|---|
+| `lookup_order` failures all return the same uniform response (`isError: true`, generic text "Operation failed"), so the agent sometimes over-retries (order truly doesn't exist), sometimes escalates prematurely (a transient network blip), sometimes asks the user for clarification (when it's really a backend permission error) | **Enhance error responses with structured metadata: `errorCategory` (transient/validation/permission), an `isRetryable` boolean, and a description of what actually caused the failure** |
+| Tempted to fix it with few-shot examples teaching the agent to interpret error-message *patterns* | Trap: the underlying text is already generic/uniform ("Operation failed") — there's no distinguishing pattern in the text for examples to teach the model to recognize |
+| Tempted to add a separate `analyze_error` MCP tool the agent calls after any failure | Trap: an extra round-trip/tool call per failure, and it pushes classification *away* from the source (the original tool) that already knows exactly why it failed |
+| Tempted to add retry-with-exponential-backoff inside the MCP server for *all* errors, only returning to the agent once retries are exhausted | Trap: retries help transient errors but are wasted effort (and added latency) on validation/permission errors that will never succeed no matter how many times they're retried — and it still doesn't tell the agent *why* it ultimately failed |
+
+**Tips:** Same core lesson as `lookup_order`/`isError` earlier: the tool (or its backend) already knows *why* a call failed. The fix belongs at the **source of the error**, encoded as **structured fields** the agent can branch on programmatically (`errorCategory`, `isRetryable`) — not as free text for the agent to guess-parse, not as an extra tool hop, and not as blanket retry logic that ignores the error's actual type.
+
+**Source check (official Exam Guide, Task Statement 2.2):**
+- "The MCP isError flag pattern for communicating tool failures back to the agent"
+- "Returning structured error metadata including errorCategory (transient/validation/permission), isRetryable boolean, and human-readable descriptions"
+- "Distinguishing between access failures (needing retry decisions) and valid empty results"
+
+### Example question (Practice Test 2, Q65 — answered correctly; near-duplicate of the earlier lookup_order/isError question)
+
+**Q:** Production logs reveal inconsistent error handling: when `lookup_order` fails, the agent sometimes retries 5+ times (wasteful when the order ID doesn't exist), sometimes escalates immediately (premature for temporary network issues), and sometimes asks users for clarification (inappropriate when the issue is a backend permission error). Investigation shows your MCP tool returns uniform error responses: `{"isError": true, "content": [{"type": "text", "text": "Operation failed"}]}`. The agent cannot distinguish between error types. What's the most effective improvement?
+
+- ❌ Add few-shot examples to the system prompt demonstrating how to interpret error message patterns and select appropriate responses for each: there's no pattern to interpret — every failure returns the exact same generic text, so examples have nothing distinguishing to teach from.
+- ❌ Create an `analyze_error` MCP tool the agent calls after any failure to determine the error category and recommended action: an extra tool call per failure, and moves classification away from the original tool/backend that already has the real answer.
+- ✅ **Enhance error responses with structured metadata: include `errorCategory` (transient/validation/permission), `isRetryable` boolean, and a description of what caused the failure.**: fixes the problem at its source — the agent now has explicit, structured signals to decide retry vs. escalate vs. clarify, instead of guessing from identical text.
+- ❌ Implement retry logic with exponential backoff in your MCP server for all errors, returning to the agent only after retries are exhausted: wastes time/latency retrying errors that can never succeed (validation, permission), and still leaves the agent without any explanation once retries run out.
+
+**Glossary (thuật ngữ):**
+- *uniform error response* = phản hồi lỗi đồng nhất (mọi loại lỗi đều trả về cùng một nội dung chung chung, khiến agent không phân biệt được)
+- *errorCategory* = loại lỗi được phân loại rõ ràng (transient = tạm thời, validation = lỗi dữ liệu đầu vào, permission = lỗi quyền truy cập)
+- *isRetryable* = cờ boolean cho biết lỗi này có nên thử lại hay không
+- *structured metadata* = siêu dữ liệu có cấu trúc (thông tin đặt trong các trường rõ ràng, máy đọc được, thay vì chỉ là văn bản tự do)
+- *push classification away from the source* = đẩy việc phân loại ra xa khỏi nơi biết rõ nguyên nhân nhất (ở đây là chính MCP tool/backend — nơi lẽ ra nên trả lỗi có phân loại ngay từ đầu)
+
+---
+
+## Iterative Research Loops: Turning a Rigid Pipeline into a Feedback Loop: Exam Rule of Thumb
+
+| Situation | Best approach |
+|---|---|
+| Fixed, single-pass pipeline (search → analysis → synthesis); the analysis agent explicitly identifies a specific, well-defined gap in the retrieved sources (e.g., "discusses X but lacks Y"), but under the current rigid pipeline this insight goes nowhere because the search phase has already finished | **Have the analysis agent report the specific gap to the coordinator as an explicit finding; the coordinator triggers a targeted follow-up search for exactly that gap and re-invokes analysis, looping until coverage is sufficient** |
+| Coordinator itself scans/interprets the analysis agent's output looking for implicit "gap indicators" to decide whether to re-search | Trap: puts the burden of *detecting* the gap on the coordinator, which didn't do the analysis — fragile, since it depends on the coordinator successfully inferring something from free-form output instead of the analysis agent stating it as an explicit, structured finding it already has |
+| Attach confidence scores per section in the final synthesis and flag low-coverage areas for manual (human) review | Trap: treats the symptom only at the very end, after synthesis, and routes a *recoverable* problem to a human instead of using the gap the system already identified to automatically go get the missing information |
+| Add an upfront research-planning agent that decomposes topics into sub-questions before the search phase even starts | Trap: front-loaded, one-shot planning cannot anticipate a gap ("lacks token refresh patterns") that is only discoverable *after* documents are retrieved and analyzed — the whole premise here is that the gap surfaces during analysis, not before search |
+
+**Tips:** This combines two ideas already in this cheat sheet: (1) **dynamic, adaptive decomposition** — generate the next subtask (a targeted search) based on what was actually discovered, rather than planning everything upfront (Task Statement 1.6); and (2) **hub-and-spoke discipline** — the agent that discovers something should report it explicitly and in structured form, and the *coordinator* is the one that decides to re-invoke earlier pipeline stages (Task Statement 1.2/1.3), not the other way around. Also apply the "is the missing information actually recoverable?" test from the retry-with-feedback rule: here it *is* recoverable (more targeted search can find token-refresh docs), so the system should loop to get it automatically — pushing straight to human review would be appropriate only if the information genuinely couldn't be found by searching more.
+
+**Source check (official Exam Guide, Task Statement 1.6, 1.2/1.3):**
+- 1.6: "The value of adaptive investigation plans that generate subtasks based on what is discovered at each step"; "dynamic adaptive decomposition based on intermediate findings"
+- 1.2/1.3: coordinator manages all inter-subagent routing and re-invocation decisions; subagents report structured findings that the coordinator acts on, rather than the coordinator inferring intent from unstructured output
+
+### Example question (Practice Test 2, Q66 — answered correctly)
+
+**Q:** Users report that final reports sometimes lack depth on specific subtopics. Investigation shows that the document analysis agent frequently identifies gaps — for instance, noting "the retrieved sources discuss API authentication but lack details on token refresh patterns" — but under the current strict pipeline, this insight isn't actionable since search has already completed. What's the most effective architectural change?
+
+- ❌ Have the synthesis agent attach confidence scores to each section and flag areas with insufficient coverage for manual review: only reacts after the fact with a human safety net, and ignores that the analysis agent already pinpointed exactly what's missing and more search could resolve it automatically.
+- ✅ **Have the analysis agent report specific gaps to the coordinator, which triggers targeted searches and re-invokes analysis until sufficient.**: turns the one-pass pipeline into an adaptive loop — the party that found the gap reports it explicitly, and the coordinator acts on that explicit signal by fetching exactly what's missing and re-checking, until coverage is actually sufficient.
+- ❌ Add a research planning agent before the search phase that decomposes topics into specific sub-questions: happens too early — this particular gap (missing token-refresh details) can only be discovered once documents have already been retrieved and analyzed, so no amount of upfront planning would have anticipated it.
+- ❌ Have the coordinator review analysis output for gap indicators and re-invoke search with gap-informed queries when gaps are detected: close, but wrong emphasis — it makes the *coordinator* respons­ible for spotting the gap by reviewing/interpreting the analysis output, instead of having the analysis agent (which actually did the work and already noticed the gap) report it explicitly; it also lacks the "re-invokes analysis until sufficient" loop, so it's only a single reactive pass rather than an iterative fix.
+
+**Glossary (thuật ngữ):**
+- *rigid / strict pipeline* = pipeline cứng nhắc, chạy một lượt cố định (search → analysis → synthesis) không có vòng lặp quay lại
+- *feedback loop / iterative loop* = vòng lặp phản hồi (kết quả của một bước được dùng để quyết định có cần chạy lại bước trước đó hay không, lặp đến khi đạt yêu cầu)
+- *targeted search* = tìm kiếm có mục tiêu cụ thể (tìm đúng vào phần thông tin còn thiếu, thay vì tìm kiếm lại từ đầu)
+- *explicit structured finding* = phát hiện được báo cáo rõ ràng dưới dạng có cấu trúc (agent tự nêu ra gap của mình, thay vì để bên khác phải suy đoán)
+- *gap indicator* = dấu hiệu cho thấy thiếu thông tin (ở đây, việc để coordinator tự "soi" ra dấu hiệu này kém tin cậy hơn việc phân tích-agent tự báo cáo thẳng)
+- *recoverable information* = thông tin có thể tìm lại được (khác với thông tin thực sự không tồn tại trong nguồn — nếu recoverable thì nên thử tìm thêm, không nên đẩy thẳng cho con người)
+
+---
+
+## Integrating an External System (Jira): Existing MCP Server vs. Reinventing It: Exam Rule of Thumb
+
+| Situation | Best approach |
+|---|---|
+| Team currently copy-pastes Jira ticket content manually into conversations; wants the agent to access this **standard** ticket data (tickets, comments, metadata) directly | **Integrate an existing Jira MCP server that already exposes tickets, comments, and metadata through discoverable tool interfaces** |
+| Tempted to call Jira's REST API directly via Bash + curl, handling auth headers and parsing JSON inline | Trap: reinvents an integration that already exists as a maintained MCP server — no discoverable tool schema for the model to reason about, ad hoc auth/credential handling in shell commands, and brittle JSON parsing done inline instead of by a proper tool contract |
+| Tempted to export Jira tickets to markdown files in the repo and have the agent Read them | Trap: a static snapshot that goes stale immediately — new comments, status changes, and updates on the live ticket won't show up, and the "export" step is still manual work, just moved earlier in the pipeline |
+| Tempted to build a brand-new custom MCP server wrapping Jira's API, purpose-built for this team's code review workflow | Trap: unnecessary reinvention — the need described is **standard** ticket/comment/metadata access, which an existing, already-available Jira MCP server already covers; building a custom server only makes sense when the need is genuinely specific to a workflow that no existing integration serves |
+
+**Tips:** When a team needs an agent to reach a common external system (Jira, GitHub, Slack, a database) for **standard** data access, prefer an **existing, already-built MCP server** for that system over: (a) raw API calls via Bash/curl (loses discoverability, structured error handling, and a stable tool contract), (b) static file exports (go stale, still require a manual step), or (c) building a custom MCP server from scratch (unnecessary engineering effort when a standard integration already does the job — reserve custom MCP servers for genuinely workflow-specific needs an existing server doesn't cover).
+
+**Source check (official Exam Guide, Task Statement 2.4):** MCP servers integration — preferring standard, already-available MCP server integrations for common external systems over ad hoc API calls, static exports, or unnecessary custom server development, so the agent gets a discoverable, structured tool interface with proper authentication handling built in.
+
+### Example question (Practice Test 2, Q67 — answered correctly)
+
+**Q:** [Context: a team currently copy-pastes Jira ticket content into conversations manually.] This currently requires manually copy-pasting content into conversations. The team wants the agent to access this standard Jira ticket data directly. What's the most effective approach?
+
+- ❌ Use the Bash tool with curl to call Jira's REST API, including authentication headers and parsing JSON responses inline: reinvents integration work that already exists as a maintained server, with no discoverable tool interface and fragile inline auth/parsing.
+- ✅ **Integrate an existing Jira MCP server that exposes tickets, comments, and metadata through discoverable tool interfaces.**: reuses a standard, already-built integration with a proper tool contract — the correct default when the need is standard ticket/comment/metadata access.
+- ❌ Export Jira tickets to markdown files in the repository that the agent accesses using the Read tool: a stale, static snapshot that misses live updates, and still requires a manual export step.
+- ❌ Build a custom MCP server wrapping Jira's API with tools designed specifically for this team's code review workflow: unnecessary — the described need is standard data access that an existing Jira MCP server already covers; custom-building is over-engineering here.
+
+**Glossary (thuật ngữ):**
+- *MCP server* = máy chủ MCP (Model Context Protocol) — một lớp tích hợp chuẩn hóa, cung cấp các "tool" có mô tả rõ ràng để agent gọi vào hệ thống bên ngoài (ví dụ Jira), thay vì agent tự gọi API thô
+- *discoverable tool interfaces* = giao diện công cụ có thể "khám phá" được — nghĩa là model có thể thấy công cụ đó tồn tại, biết input/output của nó, thay vì phải đoán qua các lệnh gọi API thủ công
+- *ad hoc / inline* = tùy biến ngay tại chỗ, không theo chuẩn (ví dụ: tự viết header xác thực và tự parse JSON ngay trong câu lệnh Bash, thay vì dùng một tool đã được thiết kế sẵn)
+- *static snapshot* = bản chụp tĩnh (dữ liệu được xuất ra một lần, không tự cập nhật theo thời gian thực — dễ bị lỗi thời/stale)
+- *reinventing the wheel* = làm lại từ đầu một thứ đã có sẵn (ở đây là tự xây dựng lại tích hợp Jira dù đã có MCP server chuẩn cho việc đó)
+
+---
+
+## Practice Test 2 — Q68: Plan Mode vs. Direct Execution for Production Bugs: Exam Rule of Thumb
+
+| Situation | Best approach |
+|---|---|
+| Clear stack trace, narrow scope, symptom points to a specific code location (even in an unfamiliar module) | **Direct execution**: read the trace, inspect the code, fix once root cause is confirmed |
+| Ambiguous, multi-step, or high-blast-radius task; requirements unclear; many plausible approaches | **Plan mode**: enumerate root causes / design before touching code |
+| Tempting hybrid: "explore a bit directly, then switch to plan mode before implementing" | ❌ Usually unnecessary overhead for a well-scoped bug — a trap answer |
+| Deciding factor | **Clarity/complexity of the signal and task**, not whether you're personally familiar with the module |
+
+**Tips:** Don't equate "I haven't worked with this module before" with "I need to plan first." The exam consistently keys mode choice off how well-scoped and unambiguous the problem is, not off the engineer's familiarity. A concrete stack trace is itself a strong, narrowing signal — it already tells you where to look, so front-loading a planning phase (enumerating root causes, designing a "comprehensive solution") adds latency without adding value. Reserve plan mode for genuinely open-ended or high-risk work: unclear requirements, broad architectural change, or multiple plausible approaches needing a deliberate before making changes.
+
+**Source check (official Exam Guide, Task Statement 3.4 — Plan mode vs. direct execution):**
+- Task Statement 3.4 covers choosing between plan mode and direct execution based on task characteristics (complexity, ambiguity, risk) rather than by rote habit or by the engineer's personal familiarity with the code.
+
+### Example question (Practice Test 2, Q68 — answered correctly)
+
+**Q:** A critical bug is affecting production users. Error logs show exceptions in the OrderProcessing module with a clear stack trace pointing to a specific area, but you haven't worked with this module before. What's the most effective approach?
+
+- ❌ Use plan mode to analyze the error in context of the module's design, enumerate potential root causes, and prioritize fixes systematically.
+- ❌ Start with direct execution to gather initial information, then switch to plan mode to design a comprehensive solution before implementing.
+- ✅ **Use direct execution to examine the stack trace, read the relevant code, and implement a fix once you identify the root cause.**
+- ❌ Enter plan mode to explore the module's architecture and dependencies before attempting any fix.
+
+**Glossary (thuật ngữ):**
+- *Plan mode* = chế độ lập kế hoạch (Claude Code phân tích/đề xuất phương án trước khi chỉnh sửa code, chưa thực thi thay đổi)
+- *Direct execution* = thực thi trực tiếp (đọc code, sửa và áp dụng thay đổi ngay, không qua giai đoạn lập kế hoạch riêng)
+- *Stack trace* = dấu vết ngăn xếp (chuỗi lời gọi hàm dẫn đến lỗi, giúp xác định vị trí xảy ra exception)
+- *Root cause* = nguyên nhân gốc rễ (nguyên nhân thực sự gây ra lỗi, không chỉ là triệu chứng bề mặt)
+- *Blast radius* = phạm vi ảnh hưởng (mức độ tác động lan rộng của một thay đổi hoặc lỗi)
+
+---
+
+## Practice Test 2 — Q69: High Precision / Low Recall in Automated Review — Splitting Finding from Thresholding: Exam Rule of Thumb
+
+| Situation | Best approach |
+|---|---|
+| One prompt instructs both "only report high-confidence issues" / "err on the side of not commenting" (precision) **and** must still catch subtle bugs (recall) — real bugs (e.g., a race condition) slip through silently | **Split into two stages: a finding stage that optimizes purely for coverage (flag every potential issue with confidence + severity metadata, no suppression), and a separate thresholding stage that filters those findings** |
+| Add few-shot examples of bug categories to catch, but keep the same conservative "high-confidence only" filtering instruction | ❌ Trap: still bundles detection and filtering into one instruction — the underlying conflict (be thorough vs. be quiet) is untouched |
+| Remove conservative filtering, report everything, then apply a programmatic dedup/category-suppression filter | ❌ Trap: a rigid category-based filter can't reason about evidence the way a calibrated confidence/severity threshold can; risks re-introducing noise or dropping real bugs by category |
+| Expand the context window (test files, git history, dependency graph) | ❌ Trap: richer context can help judgment, but doesn't resolve the structural conflict of asking one pass to be both broad and quiet |
+
+**Tips:** When a single instruction set has to be simultaneously wide (find everything, including subtle issues) and narrow (report only what's certain), the model will bias toward whichever directive is more explicit — usually the "stay quiet" one, since it's the safer-sounding instruction. This is a **precision/recall tradeoff problem**, and the fix is architectural: decouple the two objectives into separate passes so each can be tuned independently (e.g., adjust the threshold without ever weakening the finding stage's willingness to notice things). This is the multi-pass review pattern: pass 1 = generate/find with high recall + structured metadata (confidence, severity); pass 2 = filter/threshold using that metadata.
+
+**Source check (official Exam Guide, Task Statement 4.6 — Multi-pass review):**
+- 4.6 covers designing multi-stage review pipelines where a first pass optimizes for coverage/recall (flagging all potential issues with confidence and severity metadata) and a second pass applies thresholding/filtering — rather than conflating both objectives into a single prompt instruction, which forces an implicit and uncontrollable precision/recall tradeoff.
+
+### Example question (Practice Test 2, Q69 — answered correctly)
+
+**Q:** After deploying the automated review, you notice high precision but low recall — real bugs are slipping through undetected. Investigation reveals your review prompt instructs Claude to "only report high-confidence issues you are certain about" and "err on the side of not commenting." Developers appreciate the low noise, but a race condition that caused a production outage was visible in a reviewed PR and went unreported. You need to substantially improve bug detection while keeping false positive rates manageable for your team. What is the most effective approach?
+
+- ❌ Remove the conservative filtering instructions and prompt Claude to report all potential issues, then apply a programmatic filter to deduplicate and suppress categories that historically generate false positives.
+- ❌ Add detailed few-shot examples demonstrating bug categories Claude should flag — race conditions, null dereferences, error handling gaps — while keeping the high-confidence filtering instruction to maintain current precision levels.
+- ❌ Expand the context window by including related test files, recent git history, and the module's dependency graph alongside the diff, giving Claude richer signals to assess issue severity.
+- ✅ **Split the review into a finding stage where Claude's goal is coverage — flagging every potential issue with confidence and severity metadata — and a separate stage that thresholds those findings.**
+
+**Glossary (thuật ngữ):**
+- *precision* = độ chính xác (trong số các vấn đề được báo cáo, bao nhiêu % là thật — báo cáo sai càng ít thì precision càng cao)
+- *recall* = độ bao phủ / độ nhạy (trong số các vấn đề thật sự tồn tại, bao nhiêu % được phát hiện — bỏ sót càng ít thì recall càng cao)
+- *precision/recall tradeoff* = sự đánh đổi giữa độ chính xác và độ bao phủ (tăng cái này thường làm giảm cái kia nếu xử lý trong cùng một bước)
+- *finding stage* = giai đoạn phát hiện (tối ưu cho việc tìm ra càng nhiều vấn đề tiềm ẩn càng tốt, chưa lọc)
+- *thresholding stage* = giai đoạn áp ngưỡng lọc (dùng điểm tin cậy/mức độ nghiêm trọng để quyết định cái gì đủ đáng tin để báo cáo)
+- *multi-pass review* = quy trình rà soát nhiều bước (tách biệt giai đoạn tìm kiếm và giai đoạn lọc/xếp hạng thay vì gộp chung một bước)
+
+---
+
+## Practice Test 2 — Q70: Guaranteeing Preview-Before-Execute with a Single-Use Confirmation Token: Exam Rule of Thumb
+
+| Situation | Best approach |
+|---|---|
+| A single tool with a `dry_run: boolean` parameter is supposed to always be previewed before real execution, but the agent bypasses the preview in some % of calls (production monitoring shows this) | **Split into two tools: a `preview_*` tool that returns impact details plus a single-use confirmation token, and an `execute_*` tool that requires that token — cryptographically/structurally binding execution to the specific previewed action** |
+| Add detailed instructions + few-shot examples to the tool description telling the agent to always preview first | ❌ Trap: still just guidance in natural language — probabilistic, matches the exact failure already observed |
+| Server-side validation: permit the destructive call only if an identical-parameter preview call happened within the last N seconds | ❌ Trap: a time-window + parameter-matching heuristic; gameable (mismatched or similarly-shaped calls inside the window), and doesn't bind execution to the *exact* previewed action |
+| Annotate the tool as requiring confirmation; have the orchestration layer prompt the *user* for approval before forwarding calls | ❌ Trap: solves a different problem (human-in-the-loop approval), not a structural guarantee that the *agent* always previews before executing |
+
+**Tips:** Same family as "guarantee → code, not prompts" (see the refund-hook rule), but the enforcement point here is the **tool interface itself**, not a hook around the agent loop. A boolean flag on one tool is not a guarantee — nothing stops the model from setting it to `false` directly. Splitting into two tools bound by a single-use token makes the required sequence *impossible to skip*, because the second call cannot succeed without a token that only the first call produces, tied to that one specific action. This is a stronger, more general version of "fix the root cause at the right layer": don't patch a probabilistic instruction — restructure the interface so the invalid sequence has no valid path through the API.
+
+**Source check (official Exam Guide, Task Statement 2.1 — Tool interfaces & descriptions, related to 1.4/1.5 guaranteed workflow enforcement):**
+- 2.1: designing tool interfaces so that a required sequence (preview before a destructive action) is enforced structurally by the interface contract (e.g., a single-use token binding a follow-up call to a specific prior call), rather than relying on tool descriptions or prompted instructions to produce the correct call order.
+- Related to 1.4/1.5: "prompt instructions alone have a non-zero failure rate" for guaranteed compliance — the same principle applied at the tool-design layer instead of via a hook.
+
+### Example question (Practice Test 2, Q70 — answered correctly)
+
+**Q:** Your `remove_team_member` tool uses a `dry_run: boolean` parameter for previewing impacts before execution. Production monitoring shows the agent bypasses the preview step in 15% of calls by calling with `dry_run=false` directly. You need to ensure every removal is preceded by a preview that the user explicitly confirms. What is the most reliable approach?
+
+- ❌ Add detailed instructions and few-shot examples to the tool description requiring the agent to always call with dry_run=true first and wait for user confirmation before calling with dry_run=false.
+- ❌ Add server-side validation that permits dry_run=false only when a dry_run=true call with identical parameters occurred within the past 60 seconds.
+- ❌ Annotate the tool as requiring confirmation and configure the orchestration layer to prompt the user for approval before forwarding any calls to annotated tools.
+- ✅ **Replace with two tools: preview_remove_member returns impact details and a single-use confirmation token; execute_remove_member requires that token, binding execution to the specific previewed action.**
+
+**Glossary (thuật ngữ):**
+- *dry_run* = chạy thử / xem trước (thực hiện mọi bước trừ hành động thật, để xem tác động trước khi làm thật)
+- *single-use confirmation token* = mã xác nhận dùng một lần (chỉ hợp lệ cho đúng một lần thực thi, gắn với đúng hành động đã được xem trước, dùng xong là mất hiệu lực)
+- *bind execution to the specific previewed action* = ràng buộc việc thực thi vào đúng hành động đã được xem trước (không cho phép "xem trước A nhưng thực thi B")
+- *structural guarantee* = đảm bảo về mặt cấu trúc (không thể vi phạm được do chính thiết kế API, khác với việc chỉ dựa vào hướng dẫn/prompt)
+- *heuristic time-window validation* = kiểm tra theo khoảng thời gian mang tính suy đoán (dựa vào việc có lệnh preview trong N giây gần đây — dễ bị lách nếu tham số không khớp chính xác)
+
+---
+
+## Practice Test 2 — Q71: Blind Retry vs. Retry-With-Feedback for Semantic Validation Failures (confirms existing 4.4 pattern)
+
+**Note:** Near-duplicate of the "Retry only if the answer exists in the input" rule already in this cheat sheet (Task Statement 4.4), but this instance sharpens a specific distinction the exam tests: **blind retry (re-run unchanged, hope for a pass) vs. retry-with-feedback (re-run with the document + failed extraction + validation errors so the model can correct with direction)**.
+
+| Situation | Best approach |
+|---|---|
+| 12% of invoice extractions fail *semantic* validation (line items don't sum to total, vendor IDs don't match valid formats) — JSON syntax is never the problem, since tool use with strict schemas already guarantees syntax | **On validation failure, make a follow-up request including the document, the failed extraction, and the specific validation errors, so the model corrects with feedback** |
+| Retry up to N times, accepting the first attempt that happens to pass validation | ❌ Trap: blind retry — the model never learns what was wrong; a later attempt might pass schema checks by chance without being more semantically correct |
+| Stricter schema constraints + more detailed field descriptions to prevent bad values upfront | ❌ Trap: schemas (even detailed ones) guarantee syntax, not semantics — line items can still fail to sum to the total even with perfectly typed fields; doesn't address failures already happening |
+| Post-processing that auto-corrects common errors (e.g., recalculating totals from line items when sums mismatch) | ❌ Trap: silent auto-correction — you don't know which value is actually wrong (line items vs. stated total), so "fixing" one can corrupt the data without evidence |
+
+**Tips:** The retry-with-feedback mechanism only works because the missing/wrong information is *recoverable from the input the model already has* (the document itself) — it's a case of "format/structural or semantically-checkable errors → retry with feedback works," distinct from cases where the retry can't help because the correct value simply isn't present anywhere in the input (see the existing "et al." / missing-co-author-list example in this cheat sheet, where retrying risks hallucination instead).
+
+**Source check (official Exam Guide, Task Statement 4.4):**
+- "Designing self-correction validation flows" and "retrying with specific validation error feedback so the model can correct semantic mistakes" — as opposed to blind re-invocation with no information about what failed.
+
+### Example question (Practice Test 2, Q71 — answered correctly)
+
+**Q:** Your invoice extraction uses tool use with strict JSON schemas. JSON syntax errors never occur, but 12% of extractions fail semantic validation — for example, line item amounts don't match the extracted total, or vendor IDs don't match valid formats. These failures currently route to manual review. What's the most effective approach to reduce manual review volume while maintaining accuracy?
+
+- ❌ Retry the extraction up to 3 times when validation fails, accepting the first result that passes validation.
+- ✅ **When validation fails, make a follow-up request with the document, extraction, and validation errors for model correction.**
+- ❌ Add stricter schema constraints with detailed field descriptions to prevent the model from generating invalid values initially.
+- ❌ Implement post-processing logic that automatically corrects common errors, such as recalculating totals from line items when sums don't match.
+
+**Glossary (thuật ngữ):**
+- *blind retry* = thử lại một cách mù quáng (lặp lại yêu cầu y hệt, không cho mô hình biết nó đã sai ở đâu)
+- *retry with feedback* = thử lại có phản hồi (gửi kèm lỗi cụ thể để mô hình tự sửa có định hướng)
+- *semantic validation* = kiểm tra tính đúng đắn về mặt ý nghĩa (khác với kiểm tra cú pháp — dữ liệu có thể đúng định dạng nhưng sai về logic/nội dung)
+- *silent auto-correction* = tự động sửa lỗi âm thầm (thay đổi dữ liệu mà không biết chắc giá trị nào đúng, có thể làm sai lệch dữ liệu)
+
+---
+
+## Practice Test 2 — Q72: Comparing Techniques for Guaranteed JSON Schema Compliance: Exam Rule of Thumb
+
+| Technique | Guarantee level |
+|---|---|
+| **Tool use: define a tool with the target schema as input parameters; Claude calls it with the extracted data** | ✅ **Strongest — enforced at the API/generation layer**, structural validation happens as part of producing the tool call itself |
+| Pre-fill the response with an opening brace `{` to force JSON output, then complete and parse | ❌ Only guarantees the response *starts* as JSON — nothing constrains the rest to match the schema (missing fields, wrong types, malformed JSON mid-way) |
+| Prompted instructions ("output only valid JSON matching the schema exactly") + retry logic that re-prompts on parse failure | ❌ Still prompt-based/probabilistic; better than nothing, but accepts that failures *will* happen and reacts after the fact (added latency/cost) instead of preventing them |
+| Detailed JSON formatting instructions + schema in the prompt, then parse Claude's text response as JSON | ❌ Pure "prompted JSON" — no enforcement mechanism at all; relies entirely on the model voluntarily following natural-language instructions |
+
+**Tips:** All three wrong options are variations of the same underlying approach — **Claude writes free text, your code then tries to parse it as JSON**. Any variant of that approach is inherently probabilistic: pre-filling only anchors the start, instructions-only relies on compliance, and instructions+retry just adds a safety net around expected failures. **Tool use is categorically different**: it doesn't ask the model to *write* JSON that happens to match a schema, it defines the schema as the tool's actual input parameters, so producing a tool call *is* producing schema-conformant structured data — this is the strongest guarantee technique in the exam's model for structured output.
+
+**Source check (official Exam Guide, Task Statement 4.3 — Tool use & JSON schemas):**
+- "Using tool use with strict JSON schemas as the most reliable mechanism for guaranteed schema-conformant structured output, as opposed to prompted JSON generation (with or without response pre-filling or retry logic), which remains probabilistic."
+
+### Example question (Practice Test 2, Q72 — answered correctly)
+
+**Q:** Your system must extract event details from calendar invitations and output JSON that strictly conforms to a schema with fields for title, date, time, location, and attendees. Downstream reject any malformed or non-conformant JSON. What approach provides the most reliable schema compliance?
+
+- ❌ Pre-fill Claude's response with an opening brace to force JSON output, then complete and parse the response.
+- ❌ Append instructions like "Output only valid JSON matching the schema exactly" and implement retry logic to re-prompt when JSON parsing fails.
+- ❌ Include detailed JSON formatting instructions and the target schema in your prompt, then parse Claude's text response as JSON.
+- ✅ **Define a tool with your target schema as input parameters and have Claude call it with the extracted data.**
+
+**Glossary (thuật ngữ):**
+- *tool use / function calling* = sử dụng công cụ (thay vì để mô hình viết văn bản tự do, ta định nghĩa một "hàm" với tham số đầu vào cụ thể — mô hình "gọi hàm" bằng cách điền tham số theo đúng cấu trúc)
+- *response pre-filling* = mồi trước phản hồi (đặt sẵn một phần đầu của câu trả lời, ví dụ dấu `{`, để hướng mô hình bắt đầu đúng định dạng — nhưng không đảm bảo toàn bộ phần còn lại đúng)
+- *prompted JSON* = JSON được yêu cầu qua prompt (mô hình viết chuỗi văn bản dạng JSON theo hướng dẫn, sau đó hệ thống mới parse — không có ràng buộc kỹ thuật nào đảm bảo đúng)
+- *schema-conformant* = tuân thủ đúng lược đồ (dữ liệu có đầy đủ trường, đúng kiểu, đúng cấu trúc như đã định nghĩa)
+- *guaranteed at the API/generation layer* = được đảm bảo ngay ở tầng API/tạo sinh (ràng buộc xảy ra trong lúc mô hình tạo ra kết quả, không phải kiểm tra lại sau khi đã tạo xong)
+
+---
+
+## Practice Test 2 — Q73: Tool Definitions Consuming Context Budget Near the Window Limit (answered correctly — confirmed)
+
+**Note:** Initially answered by reasoning alone (no "Đúng/Sai" tag was visible on the first screenshot). The user later re-sent the same question with the platform's key revealed, confirming this reasoned answer was correct.
+
+| Situation | Best approach |
+|---|---|
+| Tool definition ≈2,500 tokens; documents <150K tokens → 98% accuracy; documents 175–190K tokens → 71% accuracy, with the **final third of the document consistently missed**; model's context window = 200K | **Tool definitions consume input context tokens too. Combined with the system prompt and document content, the total approaches the 200K context limit, degrading processing of content near the end of the document** — a sharp cliff near a hard boundary, not a smooth length-based decline |
+| "Model distributes attention proportionally; fields mentioned once near the document's end get insufficient focus" | ❌ Trap: backwards from the well-known primacy/recency pattern (beginning and end normally get *more* attention; the *middle* is what's typically neglected/"lost in the middle") — unless context overflow is the real driver, which the given numbers point to |
+| "Schemas exceeding 8–10 fields increase decision complexity during parameter generation, reducing accuracy independent of document length" | ❌ Trap: directly refuted by the data — the same 12-field schema gets 98% accuracy on shorter documents, so complexity alone can't be a length-independent cause |
+| "Very long documents exceed the model's effective attention span regardless of context limits" | ❌ Trap: the phrase "regardless of context limits" explicitly waves away the exact factor (the 200K window, and numbers that sum close to it) the question's setup is built around |
+
+**Tips:** When a question hands you specific numbers (tool definition size, document token ranges, context window size) that sum to something close to the stated limit, that's the intended signal — the exam wants you to notice that **tool definitions, system prompts, and document content all count against the same context budget**, and that budget pressure explains both the sharp (not gradual) accuracy cliff and which part of the input degrades first (the end, since that's what's nearest the boundary once everything is summed). Be suspicious of any option that explicitly denies the numeric hint the question just gave you (e.g., "regardless of context limits").
+
+**Source check (official Exam Guide, Task Statement 5.4 — Large codebase/document context management):**
+- 5.4 covers budgeting the full context window across all contributors — system prompt, tool definitions, and document/tool-result content — and recognizing that approaching the total context limit degrades processing, particularly for content nearest the boundary, rather than treating the document alone against the model's raw context size.
+
+### Example question (Practice Test 2, Q73 — answered correctly)
+
+**Q:** Your extraction system uses tool_use with a JSON schema containing 12 fields and detailed descriptions, totaling approximately 2,500 tokens for the complete tool definition. Processing documents under 150K tokens yields 98% accuracy. For documents between 175–190K tokens, accuracy drops to 71%, with information from the final third consistently missed. The model's context window is 200K tokens. What is the most likely cause?
+
+- ❌ The model distributes attention proportionally across input length, causing fields mentioned only once near the document's end to receive insufficient processing focus.
+- ❌ Schemas exceeding 8-10 fields increase decision complexity during parameter generation, reducing extraction accuracy independent of document length.
+- ❌ Very long documents exceed the model's effective attention span regardless of context limits, causing accuracy degradation for content farther from the prompt instructions.
+- ✅ **Tool definitions consume input context tokens. Combined with system prompts and document content, the total approaches the context limit, degrading end-of-document processing.**
+
+**Glossary (thuật ngữ):**
+- *context budget* = ngân sách ngữ cảnh (tổng số token khả dụng trong context window, phải chia sẻ giữa system prompt, tool definitions, và nội dung tài liệu/tool result)
+- *tool definition tokens* = token của định nghĩa tool (mô tả tool, schema, tên field... cũng tính vào tổng input context, không phải "miễn phí")
+- *accuracy cliff* = vách đá độ chính xác (sự sụt giảm đột ngột, không mượt mà, thường là dấu hiệu chạm giới hạn cứng thay vì suy giảm dần theo khoảng cách)
+- *primacy/recency effect* = hiệu ứng đầu-cuối (nội dung ở đầu và cuối ngữ cảnh thường được chú ý nhiều hơn phần giữa — "lost in the middle" mô tả việc phần *giữa* bị bỏ sót, không phải phần cuối)
+- *effective attention span* = phạm vi chú ý hiệu quả (khái niệm mô hình "chú ý" tốt trong một khoảng nhất định của input — nhưng câu hỏi này cho thấy nguyên nhân thực sự là ngân sách token, không phải một giới hạn chú ý trừu tượng)
+
+---
+
+## Practice Test 2 — Q74: tool_choice "any" for Guaranteed Structured Output Across Unknown Document Types (confirms existing tool_choice pattern)
+
+**Note:** Near-duplicate/confirmation of the existing "tool_choice: Forcing Tool Calls" rule (Task Statement 4.3) — this instance specifically tests the `"any"` case (as opposed to `"auto"` or a forced-specific-tool), which hadn't yet had its own worked example in this cheat sheet.
+
+| Situation | Best approach |
+|---|---|
+| Multiple extraction tools exist, each with a schema tailored to a different document type (invoice/contract/receipt); the document type is **not known in advance**; `tool_choice: "auto"` sometimes lets Claude return conversational text instead of calling any tool, breaking downstream parsing | **`tool_choice: "any"` with all extraction tools defined** — guarantees *some* tool call happens (no plain-text escape), while letting Claude itself pick the correct tool/schema based on the document content it's reading in that same turn |
+| Preliminary classification call, then a second call with tool_choice forced to the identified tool | ❌ Trap: works, but adds an unnecessary extra API round-trip (latency + cost) for something achievable in a single call with `"any"` |
+| Consolidate all document types into one unified-schema tool and force that tool | ❌ Trap: defeats the reason for separate, type-specific schemas — a universal schema either bloats with irrelevant fields or loses per-type precision |
+| Keep `tool_choice: "auto"` + system prompt instructions requiring tool use | ❌ Trap: the classic "guarantee → code, not prompts" failure — `auto` still permits a plain-text reply regardless of prompt wording, which is the exact bug already observed |
+
+**Tips:** Recap of the full `tool_choice` decision table: `"auto"` = Claude may choose text or a tool (no guarantee); `"any"` = Claude must call **some** tool, but picks which one (use when the right tool depends on content Claude discovers **during** that same call, e.g. document type classification); `{"type": "tool", "name": "X"}` = must call exactly tool X (use when you already know which step must run); `"none"` = force plain text. When you don't know which of several tools is correct until Claude actually reads the input, `"any"` is the right guarantee — not a pre-classification step, not consolidating into one tool, and never a prompt-only instruction.
+
+**Source check (official Exam Guide, Task Statement 4.3):**
+- "tool_choice: 'any' forces the model to call one of the available tools without specifying which, appropriate when tool selection depends on content the model determines during generation (e.g., document type classification) and a guarantee of structured output is required without knowing the type in advance."
+
+### Example question (Practice Test 2, Q74 — answered correctly)
+
+**Q:** The extraction pipeline receives documents of varying types — some are invoices, others are contracts, and some are receipts. You've defined separate extraction tools, each with its own schema tailored to the document type. During testing, you observe that with tool_choice: "auto", Claude sometimes returns conversational text instead of calling an extraction tool, causing downstream parsing failures. You need guaranteed structured output without knowing the document type in advance. What's the most effective approach?
+
+- ❌ Add a preliminary classification call, then make a second call with tool_choice forced to the identified extraction tool.
+- ✅ **Set tool_choice: "any" with all extraction tools defined.**
+- ❌ Consolidate all document types into a single unified-schema extraction tool and force that tool.
+- ❌ Keep tool_choice: "auto" with system prompt instructions requiring tool use.
+
+**Glossary (thuật ngữ):**
+- *tool_choice: "any"* = buộc phải gọi một tool nào đó trong danh sách, nhưng để mô hình tự chọn tool nào phù hợp
+- *tool_choice: "auto"* = mặc định, mô hình tự quyết định gọi tool hay trả lời bằng văn bản
+- *forced tool selection* = ép buộc gọi đúng một tool cụ thể được chỉ định trước
+- *preliminary classification call* = một lượt gọi API riêng chỉ để phân loại trước khi thực hiện lượt gọi chính
+- *unified-schema tool* = một tool duy nhất có schema "gộp chung" cho nhiều loại tài liệu khác nhau (thường đánh đổi mất độ chính xác riêng của từng loại)
+
+---
+
+## Practice Test 2 — Q75: Retry-With-Feedback for Pydantic Type Errors (confirms 4.4 pattern again)
+
+**Note:** Near-duplicate of Q71 and the existing "Retry only if the answer exists in the input" rule (Task Statement 4.4) — same lesson, different error type (a format/type mismatch: model returned a string range `"2 to 3"` where a float was expected).
+
+**Q:** Monitoring shows 12% of extractions fail Pydantic validation with specific errors like "expected float for quantity, got '2 to 3'". Retrying these requests without modification produces failures. What's the most effective approach to recover from these validation failures?
+
+- ✅ **Send a follow-up request including the validation error, asking the model to correct its output.**: retry with feedback — the prompt itself confirms blind retry ("without modification") fails, so the fix must include the specific error.
+- ❌ Implement a secondary pipeline using a larger model tier to reprocess documents that fail validation: costly, no guarantee a bigger model avoids this exact format error.
+- ❌ Set temperature to 0 to eliminate output variability and ensure consistent formatting: reduces randomness, doesn't teach the model the correct format — could be consistently wrong.
+- ❌ Pre-process source documents to standardize problematic formats before sending them for extraction: wrong layer — the failure is in the model's output, not the source document's formatting.
+
+---
+
+## Practice Test 2 — Q76: Progressive Summarization Done Right for Long-Running Accumulating Conversations: Exam Rule of Thumb
+
+| Situation | Best approach |
+|---|---|
+| Long-running, accumulating conversation (weekly sessions over months, now 85K tokens); assistant gives generic answers instead of referencing the group's specific earlier conclusions; discussions build on prior sessions' conclusions | **Progressive summarization: replace older conversation blocks with concise summaries that explicitly extract key conclusions, decisions, and recurring themes; keep the most recent exchanges verbatim** |
+| Add structured XML tags marking significant conclusions throughout the (still 85K-token) history | ❌ Trap: reorganizes the same amount of content but doesn't reduce it — the underlying context-degradation problem (and continued growth every week) remains |
+| Rolling window truncation, keep only the most recent 25K tokens | ❌ Trap: outright deletes older conclusions the discussion explicitly needs to build on |
+| Semantic embedding index + retrieve only relevant past exchanges, replacing linear format with retrieved segments | ❌ Trap: over-engineered; approximate retrieval risks losing the narrative thread of an ongoing discussion |
+
+**Tips:** This contrasts with the "Trimming Verbose Tool Outputs" rule elsewhere in this cheat sheet, where replacing **precise structured data** (order fields, dates, amounts) with prose summaries is a trap because exactness is required. Here the content is **natural discussion**, not numeric data, so summarization is the right tool — but only if done well: **explicitly extract** the specific conclusions/decisions/themes (not a vague summary) and **keep recent exchanges verbatim** so the live discussion doesn't lose precision. Progressive summarization is "good" or "bad" depending on *what* is being summarized (precise structured values → bad; narrative discussion content, with explicit extraction of key points → good) and whether recent content stays exact.
+
+**Source check (official Exam Guide, Task Statement 5.1 — Conversation context):**
+- "Progressive summarization for long-running conversations: replacing older conversation blocks with concise summaries that explicitly extract key conclusions, decisions, and recurring themes, while keeping recent exchanges verbatim to preserve precision for ongoing context."
+
+### Example question (Practice Test 2, Q76 — answered correctly)
+
+**Q:** After three months of weekly sessions, your conversation history has grown to 85,000 tokens. When users ask "What did we conclude about the theme of isolation?", the assistant provides generic literary analysis rather than referencing the group's specific insights from earlier sessions. Discussions often build on previous meetings' conclusions, so maintaining narrative context is important. What's the most effective approach?
+
+- ❌ Add structured XML tags to mark significant discussion conclusions throughout the conversation history.
+- ❌ Implement rolling window truncation to keep only the most recent 25,000 tokens.
+- ✅ **Implement progressive summarization where older conversation blocks are replaced with concise summaries that explicitly extract key conclusions, decisions, and recurring themes, keeping recent exchanges verbatim.**
+- ❌ Use semantic embedding to index the full conversation history and retrieve only relevant past exchanges for each user query, replacing the linear conversation format with retrieved segments.
+
+**Glossary (thuật ngữ):**
+- *progressive summarization* = tóm tắt dần dần / lũy tiến (các phần cũ hơn của hội thoại được nén lại thành tóm tắt theo thời gian, càng cũ càng cô đọng)
+- *explicitly extract key conclusions* = trích xuất rõ ràng các kết luận chính (khác với tóm tắt mơ hồ, chung chung — bản tóm tắt phải nêu cụ thể kết luận/quyết định/chủ đề)
+- *keep recent exchanges verbatim* = giữ nguyên văn các trao đổi gần đây (không tóm tắt phần mới nhất, để giữ độ chính xác cho ngữ cảnh đang diễn ra)
+- *rolling window truncation* = cắt cửa sổ trượt (chỉ giữ lại N token gần nhất, xóa hẳn phần cũ hơn)
+- *semantic embedding retrieval* = truy xuất bằng embedding ngữ nghĩa (đánh chỉ mục toàn bộ lịch sử rồi chỉ lấy ra đoạn liên quan — có thể làm mất mạch tường thuật liên tục)
+
+---
+
+## Practice Test 2 — Q77: Stateless API, Missing Messages Array History (confirms existing 5.1 pattern)
+
+**Note:** Direct duplicate of the existing "Stateless API: Passing Conversation History" rule (Task Statement 5.1) — same root cause, playlist-preferences framing.
+
+**Q:** You're implementing a feature where users refine their playlist preferences through multiple conversation turns. After deploying, you notice Claude's responses don't reflect what was said earlier in the same conversation — for example, a user says they love jazz, but two messages later Claude asks what genres they enjoy. What is the most likely cause?
+
+- ❌ The Claude API requires a session_id parameter that you haven't configured: no such parameter exists; the API doesn't hold conversation state server-side.
+- ✅ **Your application isn't including prior messages in the messages array.**: the API is stateless — forgetting something said 2 messages ago means the history isn't being sent.
+- ❌ The model's context window has been exceeded by the conversation length: a few-message conversation is nowhere near a 200K-token limit.
+- ❌ Claude requires a vector database connection to maintain conversation memory: no such requirement — memory is just whatever is included in `messages`.
+
+---
+
+## Practice Test 2 — Q78: System Prompt Adherence Drift — Accumulated Responses Diluting Influence, Not "Attention Decay": Exam Rule of Thumb
+
+| Situation | Best approach / correct diagnosis |
+|---|---|
+| System prompt defines a persona + specific guidelines (always ask about budget, suggest alternatives, confirm timeline); responses follow the guidelines for turns 1–4, but by turn 7 the assistant gives generic advice, skipping budget/timeline questions — and the **whole conversation is only 2,500 tokens** (too short to blame on context length) | **The assistant's own accumulated responses are diluting the system prompt's influence** — once a response drifts generic, that output becomes part of the context, and later turns increasingly pattern-match the assistant's own recent (already-drifted) outputs rather than the original system prompt — a self-reinforcing snowball, not a length/attention effect |
+| "The model's attention on system prompt instructions naturally weakens as turns accumulate" | ❌ Trap: sounds intuitive, but frames the cause as an inevitable, content-independent decay unrelated to what's actually in the context — doesn't fit a conversation this short (no "lost in the middle" scenario at 2,500 tokens) and offers no actionable fix |
+| "System prompts only establish initial behavior and don't persist across all turns" | ❌ Trap: factually wrong about the API — if the application correctly re-sends the system prompt every call, it is present in every turn |
+| "The system prompt is only sent with the first API request" | ❌ Trap: misunderstands the stateless Messages API — every request must include the system prompt again; there's no "first request only" behavior |
+
+**Tips:** When a question gives you a **short** conversation/token count and still shows guideline drift, that's a signal to rule out length-based explanations (context degradation, lost-in-the-middle, attention decay by distance) and instead look for a **compounding/self-reinforcing** mechanism: the assistant's own prior outputs, once they've drifted from instructions, become part of what the model conditions on going forward, and can increasingly outweigh the original system-level guidance. This is different from — and more actionable than — "attention naturally weakens with turn count," because it points to a fix (catch drift early, periodically reinforce key guidelines) rather than accepting an inevitable decay.
+
+**Source check (official Exam Guide, Task Statement 5.1 — Conversation context):**
+- 5.1 covers how the assistant's own accumulated conversational responses can progressively dilute or override system-prompt-level guidance in the context, as distinct from context-length-driven degradation (lost in the middle, attention span limits) — the former is a compounding, content-driven effect that can occur even in short conversations, while the latter requires substantial context length to manifest.
+
+### Example question (Practice Test 2, Q78 — answered correctly)
+
+**Q:** Your home renovation planning assistant uses a system prompt defining an expert contractor persona with specific guidelines: always ask about budget, suggest alternatives at multiple price points, and confirm timeline requirements. During testing, responses follow these guidelines for turns 1–4, but by turn 7, the assistant gives generic advice without asking about budget or timeline. The conversation totals only 2,500 tokens. What is the most likely cause?
+
+- ❌ System prompts only establish initial behavior and don't persist across all turns.
+- ❌ The system prompt is only sent with the first API request.
+- ❌ The model's attention on system prompt instructions naturally weakens as turns accumulate.
+- ✅ **The assistant's accumulated responses are diluting the system prompt's influence.**
+
+**Glossary (thuật ngữ):**
+- *system prompt persistence* = tính duy trì của system prompt (system prompt phải được gửi lại trong mọi request vì API stateless — không có khái niệm "chỉ áp dụng ở lần đầu")
+- *attention decay* = suy giảm attention (một cách giải thích mang tính "tự nhiên, không kiểm soát được" — thường là bẫy nếu không khớp với độ dài ngữ cảnh thực tế)
+- *diluting influence* = pha loãng ảnh hưởng (các phản hồi mới, đã trôi khỏi hướng dẫn ban đầu, dần lấn át vai trò định hướng của system prompt trong ngữ cảnh)
+- *self-reinforcing drift / snowball effect* = hiệu ứng tự củng cố / lăn tuyết (một khi đã lệch hướng, các lượt sau càng dễ lệch thêm vì mô hình học theo chính output gần nhất của nó)
+- *in-context learning from own outputs* = học trong ngữ cảnh từ chính output của mình (mô hình có xu hướng tiếp tục theo pattern nó vừa tạo ra trong cùng hội thoại)
+
+---
+
+## Practice Test 2 — Q79: Sliding Window Loses Old Content → Hybrid Summarize-Older/Keep-Recent-Verbatim (confirms Q76 pattern)
+
+**Note:** Near-duplicate of Q76's "Progressive Summarization Done Right" rule (Task Statement 5.1) — same fix, framed as replacing a lossy sliding window.
+
+**Q:** Users report that during extended conversations, the AI loses track of specific topics, examples, and preferences they mentioned earlier in the session. Your current implementation uses a sliding window that keeps only the most recent 25 message pairs to stay within context limits. What's the most effective approach to maintain awareness of earlier conversation content while managing context size?
+
+- ❌ Implement vector similarity search over the full conversation history, retrieving relevant past messages for each user query: over-engineered; approximate retrieval fragments the linear conversation flow.
+- ❌ Increase the window size to 50 message pairs to retain more conversation history before truncation: just delays the same failure to a later point.
+- ❌ Add a separate API call each turn to summarize messages being dropped, prepending this running summary to the conversation: unnecessary per-turn API overhead vs. summarizing as part of the architecture only when needed.
+- ✅ **Replace the sliding window with a hybrid approach: summarize older messages while keeping recent messages verbatim.**: matches the established pattern — reduce size without losing older content, keep recent content exact.
+
+---
+
+## Practice Test 2 — Q80: The Fix for Guideline Drift — Periodic User-Role Reinforcement (directly pairs with Q78)
+
+**Note:** This is the actionable "fix" half of Q78's diagnosis. Q78 established that guideline drift over turns is caused by the assistant's own accumulated responses diluting the system prompt's influence (a compounding effect, not context-length exhaustion). This question confirms that reading explicitly: conversation length is well within context limits (30K of 200K tokens), ruling out capacity-based explanations, and asks for the correct intervention.
+
+| Situation | Best approach |
+|---|---|
+| Claude follows system prompt guidelines consistently for the first 10–15 turns, but by turns 25–30 responses deviate (informal tone when formality was specified, skipped required formatting, restricted info types appearing) — conversation is well within context limits (30K/200K tokens), so this is guideline-adherence drift, not context capacity | **Insert user-role messages that reinforce critical guidelines at natural conversation breakpoints, especially before complex requests** — proactively counters the progressive dilution identified in Q78 |
+| Move behavioral guidelines from the system prompt into the first user message | ❌ Trap: still a one-time, front-loaded instruction (same position problem as the system prompt); doesn't address turn-based drift, and may even weaken adherence since system prompts typically carry special instruction-following priority |
+| Implement post-response validation that regenerates each response until it conforms to guidelines | ❌ Trap: treats the symptom after it occurs, with added cost/latency from repeated regeneration; doesn't prevent the drift from starting, and can be unreliable once the model's own in-context sense of "correct" has drifted |
+| Automatically start a new conversation after 20 turns, passing a summary of the prior context | ❌ Trap: solves a different problem (context capacity), explicitly ruled out by the question (only 30K/200K tokens used); disrupts continuity/UX for a problem that isn't about running out of context |
+
+**Tips:** This pairs directly with Q78: if the diagnosis is "the assistant's own accumulated responses are diluting the system prompt's influence" (a compounding, content-driven effect), the fix is **periodic reinforcement of the critical guidelines via user-role messages at natural breakpoints** — not moving the instructions elsewhere (still front-loaded, still one-time), not regenerating after the fact (reactive, costly), and not resetting the session (solves the wrong problem when context capacity isn't the issue).
+
+**Source check (official Exam Guide, Task Statement 5.1 — Conversation context):**
+- 5.1 covers reinforcing critical behavioral guidelines via periodic user-role messages at natural conversation breakpoints (especially before complex requests) as the correct countermeasure to system-prompt-influence dilution during extended conversations — distinct from context-capacity fixes (session reset, summarization for length) which address a different failure mode.
+
+### Example question (Practice Test 2, Q80 — answered correctly)
+
+**Q:** During QA testing, you notice that Claude follows your system prompt guidelines consistently in the first 10–15 turns, but by turn 25–30, responses begin deviating — using informal tone when formality was specified, occasionally skipping required formatting, or providing information types the guidelines restrict. Conversation length is well within context limits (typically 30,000 tokens out of 200,000 available). What's the most effective approach to maintain consistent behavior throughout extended conversations?
+
+- ❌ Move behavioral guidelines from the system prompt into the first user message.
+- ❌ Implement post-response validation that regenerates each response until it conforms to the specified guidelines.
+- ✅ **Insert user-role messages that reinforce critical guidelines at natural conversation breakpoints, especially before complex requests.**
+- ❌ Automatically start a new conversation after 20 turns, passing a summary of the prior context to maintain continuity.
+
+**Glossary (thuật ngữ):**
+- *guideline drift* = sự trôi dần khỏi hướng dẫn (mức độ tuân thủ guideline giảm dần theo số turn, dù chưa hết context)
+- *natural conversation breakpoints* = điểm ngắt tự nhiên của hội thoại (thời điểm chuyển chủ đề, trước yêu cầu phức tạp — nơi thích hợp để chèn lại nhắc nhở)
+- *reinforcement message* = tin nhắn củng cố (chèn thêm để nhắc lại các quy tắc/guideline quan trọng, thường ở vai "user")
+- *post-response validation/regeneration* = kiểm tra và tạo lại phản hồi (chạy lại nhiều lần cho đến khi output đạt guideline — tốn chi phí, xử lý triệu chứng chứ không phải nguyên nhân)
+- *context capacity vs. adherence drift* = dung lượng ngữ cảnh khác với trôi tuân thủ (hai vấn đề khác nhau — dùng sai giải pháp của vấn đề này cho vấn đề kia là bẫy thường gặp)
+
+---
+
+## Practice Test 2 — Q81: Injecting External Webhook Events into an Ongoing Conversation via the System Prompt: Exam Rule of Thumb
+
+| Situation | Best approach |
+|---|---|
+| An external system pushes a real-time event (webhook: package shipped) mid-conversation; the user is actively chatting and will likely follow up soon; you want the next response to naturally reflect the new state, without fabricating a conversational turn | **Add the current status to the system prompt before the next API call** — ambient/environmental state belongs in the system prompt, not attributed to either conversational party; the next real user turn naturally has access to it |
+| Append the status update as a prefix to the next user message before calling the API | ❌ Trap: misattributes system-originated data as something the *user* said — wrong role semantics |
+| Immediately send an API request with the update as a synthetic user message, generating an unsolicited assistant response | ❌ Trap: produces a reply nobody asked for, which can collide with the user's real in-flight message (race condition) and breaks natural conversational flow |
+| Configure the assistant to call a get_order_status tool at the start of every response | ❌ Trap: wasteful — adds a tool call (latency/cost) on every single turn regardless of whether anything changed, instead of updating only when a real event occurs |
+
+**Tips:** When an external event needs to inform Claude's next response without being something anyone "said," the system prompt is the right injection point — it represents ambient context/state, distinct from user and assistant turns. Avoid two temptations: (1) smuggling system-originated facts into a user-role message (misattributes authorship), and (2) proactively firing an assistant response the user didn't request (disrupts the natural turn-taking flow and risks racing the user's actual next message). Also avoid solving a one-off event with an always-on tool call every turn — that trades a rare, event-driven update for constant unnecessary overhead.
+
+**Source check (official Exam Guide, Task Statement 5.1 — Conversation context):**
+- Covers injecting external/environmental state updates (e.g., webhook-driven status changes) into the system prompt ahead of the next API call, so the assistant naturally incorporates current state into its next real response — as distinct from fabricating synthetic conversational turns or triggering unsolicited responses.
+
+### Example question (Practice Test 2, Q81 — answered correctly)
+
+**Q:** During a conversation about order tracking, your external system receives a webhook indicating the user's package has shipped. The user is actively chatting and will likely send a follow-up message soon. You want the assistant to naturally incorporate this status change in its next response. What's the most effective approach?
+
+- ❌ Append the status update as a prefix to the next user message before calling the API.
+- ❌ Immediately send an API request with the update as a synthetic user message, generating an unsolicited assistant response.
+- ✅ **Add the current shipping status to the system prompt before the next API call.**
+- ❌ Configure the assistant to call a get_order_status tool at the start of every response.
+
+**Glossary (thuật ngữ):**
+- *webhook* = webhook (cơ chế hệ thống bên ngoài chủ động gửi thông báo sự kiện đến ứng dụng của bạn ngay khi có thay đổi, thay vì phải hỏi liên tục)
+- *ambient/environmental state* = trạng thái nền/môi trường (thông tin về thế giới bên ngoài mà Claude cần biết, không phải điều ai đó "nói" trong hội thoại)
+- *synthetic user message* = tin nhắn user giả lập (tạo ra một tin nhắn "như thể" user gửi, dù thực tế không phải)
+- *unsolicited assistant response* = phản hồi không được yêu cầu (assistant tự tạo ra câu trả lời mà không ai chủ động hỏi ở lượt đó)
+- *race condition* = tình huống tranh chấp thời điểm (phản hồi tự động có thể chen ngang đúng lúc user đang gửi tin nhắn thật, gây xung đột thứ tự)
+
+---
+
+## Practice Test 2 — Q82: Periodic Reminder Injection for Proficiency-Adaptation Drift (⚠️ self-reasoned, no answer key shown — near-duplicate of Q78/Q80)
+
+**Note:** No answer tag was provided for this question (pasted as plain text, no screenshot with Đúng/Sai). This is my own reasoning applying the confirmed Q78/Q80 pattern, not a verified platform key.
+
+| Situation | Best approach |
+|---|---|
+| System prompt has verbose proficiency-adaptation guidelines; they're followed correctly through the first ~12 turns, but in conversations exceeding 12 turns (~4,000 tokens of history) the assistant increasingly defaults to intermediate-level explanations regardless of stated level — a turn-based drift, since the guidelines demonstrably work early on (not an ambiguity/clarity problem) | **Inject a condensed reminder of the proficiency requirements periodically (every 4–5 turns)** — matches the confirmed Q78/Q80 fix for progressive dilution of system-level guidance over turns |
+| Separate API call after each response to evaluate difficulty match, regenerating misaligned responses | ❌ Trap: reactive, post-hoc, costly on every turn — the same "post-response validation/regeneration" trap ruled out in Q80 |
+| Replace verbose guidelines with few-shot examples demonstrating level-specific differences | ❌ Trap: addresses instruction *clarity*, but the guidelines already work correctly for the first 12 turns — the cause is dilution over time, not ambiguity; a reformatted but still one-time, front-loaded instruction still grows more distant as turns accumulate |
+| Restructure the system prompt to place the rules in a final section immediately before conversation history begins | ❌ Trap: still a single, one-time placement; the same growing-distance-over-turns problem recurs as the conversation lengthens |
+
+**Tips:** The tell here is that the problem is explicitly turn-count-triggered (fine through 12 turns, degrading past that point), not present from turn 1 — this rules out "the instructions are unclear/verbose" as the cause (ruling out the few-shot fix) and points to the same compounding dilution mechanism from Q78. Any fix that's still a single placement in the system prompt (front section, final section, few-shot or prose) suffers the same fate: it grows more distant from the model's generation point as the conversation grows. Only a **periodic** re-injection counters this by repeatedly refreshing the guidance's presence and weight throughout the extended conversation.
+
+**Source check (official Exam Guide, Task Statement 5.1 — Conversation context):**
+- Same principle as Q78/Q80: periodic reinforcement of critical behavioral guidelines throughout an extended conversation counters progressive dilution of system-prompt-level instructions, as distinct from clarity fixes (few-shot, rewording) or one-time repositioning, which don't address the turn-based compounding nature of the drift.
+
+### Example question (Practice Test 2, Q82 — answered by reasoning, unconfirmed)
+
+**Q:** Your conversational AI tutor has a 2,800-token system prompt containing teaching methodology, persona guidelines, and detailed written instructions for adapting explanations to different proficiency levels. User testing reveals that in conversations exceeding 12 turns (approximately 4,000 tokens of conversation history), the assistant increasingly ignores the proficiency-adaptation guidelines, defaulting to intermediate-level explanations regardless of the learner's stated level. What's the most effective approach to ensure consistent adherence to these guidelines throughout extended conversations?
+
+- ❌ After each assistant response, make a separate API call to evaluate whether the difficulty level matched the learner's profile, regenerating responses that don't align.
+- ❌ Replace the verbose proficiency guidelines with few-shot examples demonstrating appropriate responses at each proficiency level, showing concrete differences in vocabulary, complexity, and explanation depth.
+- ❌ Restructure the system prompt to place the proficiency-adaptation rules in a clearly-marked final section immediately before the conversation history begins.
+- ✅ **Inject a condensed reminder of the proficiency requirements into the conversation as a system message every 4-5 turns.** *(my reasoned answer — not confirmed by a shown key)*
+
+**Glossary (thuật ngữ):**
+- *proficiency-adaptation guidelines* = hướng dẫn điều chỉnh theo trình độ (quy tắc để assistant thay đổi độ khó/ngôn ngữ giải thích theo trình độ người học)
+- *condensed reminder* = lời nhắc cô đọng (bản rút gọn của guideline quan trọng, đủ ngắn để chèn lại định kỳ mà không tốn nhiều token)
+- *turn-based drift* = trôi dần theo số turn (khác với lỗi do hướng dẫn không rõ ràng — ở đây hướng dẫn đã đúng ngay từ đầu, chỉ suy yếu dần theo thời gian)
+- *one-time front-loaded instruction* = hướng dẫn đặt một lần duy nhất ở đầu (dù đặt ở đầu hay cuối system prompt, nó vẫn chỉ xuất hiện một lần, nên càng hội thoại dài càng "xa" điểm sinh câu trả lời)
+
+---
+
+## Practice Test 2 — Q85: Stratified Random Sampling for High-Confidence Errors (confirms existing 5.5 monitoring pattern)
+
+**Note:** Direct application of the existing "Stratified random sampling for measuring error rates… and detecting novel error patterns" quote already in this cheat sheet (Task Statement 5.5), here specifically for errors *within* the high-confidence group where the confidence signal itself has already failed.
+
+| Situation | Best approach |
+|---|---|
+| System routes <85% confidence to human review; a quarterly audit finds 12% of >85%-confidence extractions still contain "plausible-but-incorrect" errors from varied sources (comparison tables, appendix confusion, ambiguous phrasing); need to both catch these errors sustainably and measure whether improvements reduce the error rate over time | **Stratified random sampling reviewing a fixed % of high-confidence extractions weekly** — gives a trackable error-rate metric over time *and* surfaces unknown/novel error patterns, since the sample isn't restricted to already-identified error sources |
+| Lower the confidence threshold from 85% to 70% | ❌ Trap: doesn't fix the root issue — these errors already occur *above* 85%, so confidence isn't predictive for this failure type; just routes more untargeted volume to review |
+| Add a verification pass that re-extracts and flags disagreement between two attempts | ❌ Trap: misses *systematic* misinterpretation — if the model consistently misreads the same ambiguous phrasing or table, both extraction attempts likely produce the same wrong answer, so disagreement-based flagging catches nothing |
+| Heuristic rules flagging documents with comparison tables/appendices regardless of confidence | ❌ Trap: only covers currently-known error sources; doesn't generalize to future/unknown error patterns (reactive, non-generalizing patch) |
+
+**Tips:** When the population needing review is already *above* the confidence threshold (i.e., the confidence signal has already been "spent" and failed for this group), you can't stratify further by confidence — you need **random sampling with fixed periodic cadence** to (1) get an unbiased, trackable error-rate estimate over time and (2) catch error types you don't yet know to look for. Contrast with the "Allocating Limited Human Review" rule elsewhere in this cheat sheet, where confidence-calibrated thresholds are right for *targeting* review capacity among a population where confidence still carries signal — stratified random sampling is for *monitoring* a population where it doesn't.
+
+**Source check (official Exam Guide, Task Statement 5.5 — Human review & calibration):**
+- "Stratified random sampling for measuring error rates over time and detecting novel error patterns among extractions the confidence-based routing has already classified as high-confidence."
+
+### Example question (Practice Test 2, Q85 — answered correctly)
+
+**Q:** The system routes documents with extraction confidence below 85% to human review. A quarterly audit reveals that 12% of high-confidence extractions (>85%) also contain errors — cases where the model finds plausible-but-incorrect values. Error sources vary: comparison tables showing competitor specs, appendices referencing different product variants, and ambiguous phrasing the model misinterprets. You need a sustainable strategy to catch these high-confidence errors and measure whether improvements reduce the error rate over time. What approach is most effective?
+
+- ✅ **Implement stratified random sampling reviewing a fixed percentage of high-confidence extractions weekly, enabling error rate measurement and novel pattern detection.**
+- ❌ Lower the confidence threshold from 85% to 70%, routing a larger volume of extractions to human review.
+- ❌ Add a verification pass that re-extracts from each high-confidence document, flagging cases where the two extraction attempts produce different results.
+- ❌ Implement heuristic rules that flag documents containing comparison tables or appendices for review regardless of confidence score.
+
+**Glossary (thuật ngữ):**
+- *stratified random sampling* = lấy mẫu ngẫu nhiên theo tầng (chia tổng thể thành các nhóm/tầng rồi lấy mẫu ngẫu nhiên trong từng nhóm, đảm bảo đại diện đều)
+- *plausible-but-incorrect values* = giá trị hợp lý nhưng sai (kết quả trông có vẻ đúng, hợp logic, nhưng thực chất không chính xác — khó phát hiện hơn lỗi rõ ràng)
+- *novel error pattern* = dạng lỗi mới chưa từng biết đến (chưa được liệt kê trong danh sách nguyên nhân lỗi hiện tại)
+- *systematic misinterpretation* = hiểu sai một cách hệ thống (mô hình luôn hiểu sai theo cùng một cách với cùng loại nội dung mơ hồ — không phải lỗi ngẫu nhiên)
+- *confidence signal exhausted* = tín hiệu confidence đã "hết tác dụng" (điểm tin cậy không còn phản ánh đúng khả năng sai của nhóm dữ liệu này nữa)
+
+---
+
+## Practice Test 2 — Q86: Structured Fact Database for Precision-Dependent Questions Across Papers (confirms structured-layer pattern)
+
+**Note:** Direct variant of the existing "structured case-facts / separate context layer" rule (Q57 pattern) and the cheat sheet principle "structured data beats text" (Task Statement 5.1/5.6) — here applied to a research assistant discussing multiple academic papers over an extended conversation.
+
+| Situation | Best approach |
+|---|---|
+| Research assistant discusses academic papers; conversations exceed 60K tokens; current approach summarizes paper discussions after 8 turns to fit context; users later ask precision-dependent follow-ups (exact sample sizes, p-values, inclusion criteria) about papers discussed earlier, and answers come back hedged or inaccurate | **Maintain a structured database of key facts extracted from each paper (sample sizes, statistics, methods); retrieve relevant entries into context when a precision-dependent question is detected** — scales across many papers and guarantees exact values via structure, not prose |
+| Retrieval that re-injects relevant raw paper sections when the question suggests numerical need | ❌ Trap: detecting "needs numbers" to trigger retrieval is a fuzzy classification step, and raw text still requires the model to re-derive the exact value each time rather than handing over an already-precise fact |
+| Separate Claude call with explicit instructions to generate "higher-fidelity" summaries preserving all numerical details | ❌ Trap: still narrative summarization — no structural guarantee that precise values survive condensation, even with better instructions (same risk already flagged: condensing numbers into any summary format risks vagueness) |
+| Keep methodology/results source text in context permanently, summarizing only discussion/interpretation | ❌ Trap: doesn't scale — across many papers in an extended conversation, permanently retaining full raw sections reproduces the exact context-growth problem being solved |
+
+**Tips:** Whenever a question needs **exact, precise values** (numbers, dates, statistics, IDs) that must survive across a long, evolving conversation, the answer is almost always: **extract those specific facts into a structured store once, separate from the summarization/narrative flow**, and retrieve only the relevant structured entries on demand. Prose summarization — no matter how carefully instructed — cannot structurally guarantee precision is preserved, and permanently keeping raw source text doesn't scale as the number of documents/topics grows.
+
+**Source check (official Exam Guide, Task Statement 5.1 — Conversation context, related to 5.6 provenance):**
+- Parallels the Task Statement 1.4/5.1 principle behind structured case-facts (Q57): "Extracting and persisting structured key-fact data (e.g., sample sizes, statistical values, methodology details) into a separate, retrievable context layer, rather than relying on narrative summarization, to preserve precision for future precision-dependent queries across an extended conversation."
+
+### Example question (Practice Test 2, Q86 — answered correctly)
+
+**Q:** Your research assistant helps users analyze academic papers over extended conversations. User testing reveals a recurring issue: after conversations exceed 60K tokens, users ask follow-up questions requiring precise numerical details from papers discussed earlier — sample sizes, exact p-values, specific inclusion criteria. Your current approach summarizes paper discussions after 8 turns to stay within context limits. Users report that responses to these precision-dependent questions are often hedged or inaccurate. What's the most effective architectural change?
+
+- ❌ Implement retrieval that re-injects relevant paper sections when the user's question suggests they need specific numerical details.
+- ❌ Use a separate Claude call with explicit instructions to generate higher-fidelity summaries that preserve all numerical details and statistical values.
+- ❌ Keep source text from methodology and results sections in context permanently, while summarizing only the conversational discussion and interpretation portions.
+- ✅ **Maintain a structured database of key facts extracted from each paper (sample sizes, statistics, methods) and retrieve relevant entries into context when precision-dependent questions are detected.**
+
+**Glossary (thuật ngữ):**
+- *precision-dependent question* = câu hỏi đòi hỏi độ chính xác tuyệt đối (cần con số/giá trị chính xác, không chấp nhận trả lời mơ hồ hoặc ước lượng)
+- *structured fact database* = cơ sở dữ liệu sự kiện có cấu trúc (lưu các giá trị quan trọng dưới dạng trường dữ liệu rõ ràng, tách biệt khỏi văn bản tóm tắt)
+- *higher-fidelity summary* = tóm tắt "độ trung thực cao hơn" (vẫn là tóm tắt dạng văn xuôi, chỉ được yêu cầu giữ chi tiết hơn — không có đảm bảo cấu trúc)
+- *retrieve relevant entries* = truy xuất đúng mục cần thiết (chỉ lấy đúng phần dữ liệu liên quan đến câu hỏi hiện tại, không tải toàn bộ)
+- *scale across documents* = mở rộng qua nhiều tài liệu (giải pháp phải hoạt động tốt dù số lượng paper/chủ đề tăng lên theo thời gian)
+
+---
+
+## Practice Test 2 — Q87: Plan Mode for Broad, Multi-File Breaking-Change Migrations (contrasts with Q68's direct-execution case)
+
+**Note:** This pairs directly with Q68 ("Plan Mode vs. Direct Execution for Production Bugs"), but sits on the opposite side of that rule: there, a narrow, high-signal production bug (clear stack trace) called for direct execution; here, a broad, multi-file, multi-module change with several *interacting* breaking changes calls for plan mode first.
+
+| Situation | Best approach |
+|---|---|
+| Security audit requires a major version migration (v2→v3) of a library with multiple breaking changes that interact (callback→Promise changes control flow at every call site, a restructured type cascades through consumers, three methods removed need replacement logic); the library is imported in 45 files across several modules — scope and impact are not yet understood | **Enter plan mode: explore library usage across modules, map affected code paths, then create a migration strategy before implementing** |
+| Paste the migration guide's breaking changes into the prompt and use direct execution to update all 45 files | ❌ Trap: treats interacting breaking changes as a simple mechanical find/replace; jumping to execution across many files without first understanding usage patterns risks incomplete or inconsistent fixes |
+| Create a custom slash command encapsulating the migration transformations, then execute it against each file without prior codebase exploration | ❌ Trap: automates the transformation before understanding how the library is actually used — premature automation without exploration, similar to jumping to a fixed plan before knowing the real usage patterns |
+| Update the dependency version, run the test suite, and use Claude Code to fix each failure as it appears | ❌ Trap: reactive, test-driven whack-a-mole; doesn't systematically map the interacting breaking changes upfront and can miss issues the test suite doesn't cover |
+
+**Tips:** Contrast with Q68: the deciding factor for plan mode vs. direct execution is **task clarity/complexity and blast radius**, not a fixed rule of thumb like "bugs = direct, migrations = plan." A narrow, well-scoped problem with a clear signal (a stack trace pointing at one spot) favors direct execution even in an unfamiliar module. A broad change touching many files across modules, with multiple breaking changes that interact with each other and an unknown usage footprint, favors plan mode: explore first (map where and how the library is used), then design a migration strategy, then implement — because acting first here risks compounding inconsistent fixes across 45 files before you understand the full scope.
+
+**Source check (official Exam Guide, Task Statement 3.4 — Plan mode vs. direct execution):**
+- 3.4 covers choosing plan mode for broad, multi-file changes with significant blast radius and interacting breaking changes — mapping usage and affected code paths before implementing — as opposed to direct execution, which fits narrow, well-scoped, high-signal tasks (see Q68).
+
+### Example question (Practice Test 2, Q87 — answered correctly)
+
+**Q:** A security audit requires updating your authentication library from v2 to v3. The migration guide documents breaking changes: authenticate() now returns a Promise instead of accepting a callback, the User type has restructured fields, and three deprecated methods were removed. Grep shows the library is imported in 45 files across several modules. What's the most effective approach?
+
+- ❌ Paste the migration guide's breaking changes into your prompt and use direct execution to update all usages across the 45 files.
+- ✅ **Enter plan mode to explore library usage across modules, map affected code paths, then create a migration strategy before implementing.**
+- ❌ Create a custom slash command encapsulating the migration transformations, then execute it against each file without prior codebase exploration.
+- ❌ Update the dependency version, run the test suite, and use Claude Code to fix each failure as it appears.
+
+**Glossary (thuật ngữ):**
+- *breaking change* = thay đổi phá vỡ tương thích (thay đổi API khiến code cũ không còn hoạt động đúng nếu không sửa)
+- *interacting breaking changes* = các thay đổi phá vỡ tương thích có tương tác lẫn nhau (một thay đổi ảnh hưởng đến cách xử lý thay đổi khác, ví dụ callback→Promise làm thay đổi luồng điều khiển tại mọi nơi gọi hàm)
+- *blast radius* = phạm vi ảnh hưởng (số lượng file/module bị tác động bởi một thay đổi)
+- *migration strategy* = chiến lược di trú (kế hoạch có hệ thống để chuyển đổi codebase sang phiên bản/API mới)
+- *premature automation* = tự động hóa quá sớm (viết script/lệnh tự động biến đổi code trước khi hiểu rõ cách code hiện tại đang sử dụng thư viện)
+
+---
+
+## Practice Test 2 — Q88: Iterative Refinement for Interacting Formatting Issues (first Task Statement 3.5 example)
+
+**Note:** First question in this cheat sheet testing Task Statement 3.5 (Iterative refinement), previously flagged as untested.
+
+| Situation | Best approach |
+|---|---|
+| PDF report generation works correctly for the database query, but has three formatting issues that **interact**: table columns too narrow (truncation), dates not properly formatted, page breaks incorrect — changing column widths affects date rendering, and page breaks depend on content height | **Fix issues in dependency order, one at a time, verifying (testing) after each change**: column width first (with specific measurements) → verify → fix date formatting within the corrected columns → verify → adjust page breaks — testing after each step |
+| Show Claude an example of a correctly formatted report and ask it to match that output, rather than listing specific technical issues | ❌ Trap: an end-result example doesn't convey the specific technical causes (exact measurements, page-break logic) or the correct fix order when issues interact; Claude may mimic surface appearance without fixing the underlying mechanism |
+| Provide all three issues in a single detailed message with exact specifications, letting Claude address them together in one update | ❌ Trap: since the issues interact, fixing them all at once makes it very hard to attribute a new problem to the specific change that caused it — loses step-by-step verifiability |
+| Start fresh with a detailed prompt specifying all formatting requirements upfront | ❌ Trap: discards working progress (correct DB querying) and assumes the interactions between issues can be fully anticipated before actually observing them in practice |
+
+**Tips:** When multiple issues are **interdependent** (fixing one changes how another manifests), the effective iteration pattern is: **fix in dependency order, one change at a time, verify/test after each step**, rather than batching all fixes into one large change or trying to specify everything correctly upfront. This mirrors the general principle that a fixed, comprehensive plan can't anticipate consequences you can only discover by observing the system after each incremental change — especially true when changes causally affect each other.
+
+**Source check (official Exam Guide, Task Statement 3.5 — Iterative refinement):**
+- 3.5 covers iterating toward a working solution by addressing interdependent issues in dependency order with verification after each step, rather than batching all changes together or attempting to fully specify a complex, interacting set of requirements in a single upfront pass.
+
+### Example question (Practice Test 2, Q88 — answered correctly)
+
+**Q:** You've asked Claude Code to build a PDF report generation feature. The initial implementation queries the database correctly, but the output has formatting issues: table columns are too narrow causing content truncation, dates display without proper formatting, and page break handling is incorrect. You've noticed these issues interact — changing column widths affects how dates render, and page breaks depend on content height. What's the most effective approach for iterating toward a working solution?
+
+- ✅ **Address the column width issue first with specific measurements, verify it works, then fix date formatting within the corrected columns, then adjust page breaks — testing after each change.**
+- ❌ Show Claude an example of a correctly formatted report and ask it to match that output, rather than listing the specific technical issues.
+- ❌ Provide all three issues in a single detailed message with exact specifications for each, allowing Claude to address them together in one update.
+- ❌ Start fresh with a detailed prompt specifying all formatting requirements upfront.
+
+**Glossary (thuật ngữ):**
+- *interacting issues* = các vấn đề có tương tác lẫn nhau (sửa vấn đề này làm thay đổi cách vấn đề khác biểu hiện)
+- *dependency order* = thứ tự phụ thuộc (thứ tự sửa lỗi hợp lý dựa trên việc vấn đề nào ảnh hưởng đến vấn đề nào)
+- *iterative refinement* = tinh chỉnh lặp lại (sửa từng phần nhỏ, kiểm tra, rồi mới tiếp tục — thay vì làm tất cả cùng lúc)
+- *batching changes* = gộp nhiều thay đổi làm một lần (áp dụng nhiều fix cùng lúc — rủi ro khi các fix có tương tác, khó xác định nguyên nhân nếu có lỗi mới)
+- *content truncation* = nội dung bị cắt xén (do cột quá hẹp, dữ liệu không hiển thị đầy đủ)
+
+---
+
+## Practice Test 2 — Q89: @references for One-Off Pattern-Following Tasks vs. CLAUDE.md (⚠️ self-reasoned, no answer key shown)
+
+**Note:** No "Đúng/Sai" tag was visible on this question's screenshot (only a selected radio button, no color-coded verdict), so this answer is my own reasoning, not a confirmed platform key.
+
+| Situation | Best approach |
+|---|---|
+| A one-off task must follow existing code patterns (db transactions, error handling, audit logging); you've already identified the exact 3 files that exemplify these patterns; patterns are already well-documented elsewhere (team wiki) and don't need project-level documentation | **Use @references to include the three modules directly in the prompt, giving Claude concrete code examples of the patterns to follow** |
+| Describe the patterns in natural language in the prompt | ❌ Trap: less precise than actual code — prose descriptions can miss specific conventions that concrete code makes explicit |
+| Ask Claude to explore the codebase to find and understand the patterns before generating the new module | ❌ Trap: wasted effort — you already know exactly which files exemplify the pattern, so exploration is unnecessary |
+| Add documentation of each pattern to CLAUDE.md, establishing them as automatic project conventions | ❌ Trap: explicitly ruled out by the question itself — this is a one-off task and the patterns are already documented in the team wiki; CLAUDE.md is for persistent, project-wide conventions applied across many future tasks, not single-use integration tasks |
+
+**Tips:** When you already know precisely which existing files exemplify a pattern, and the task is a one-off (not a recurring project convention), the most direct and precise approach is to reference those files directly (@references) so Claude sees concrete, exact code — not a prose description (imprecise) and not a fresh exploration (unnecessary, since you already know the answer). Reserve CLAUDE.md for conventions that should apply automatically and persistently across many future tasks — the question's own wording ("one-off," "don't need additional project-level documentation") is a direct signal to rule it out.
+
+**Source check (official Exam Guide, Task Statement 3.1 — CLAUDE.md hierarchy, contrasted with direct file references):**
+- 3.1 covers when project-level persistent documentation (CLAUDE.md) is appropriate (recurring conventions applied automatically across tasks) versus when direct, in-prompt file references are more effective for one-off tasks where the exact source-of-truth files are already known.
+
+### Example question (Practice Test 2, Q89 — answered by reasoning, unconfirmed)
+
+**Q:** You're implementing a new payment processing module that must follow your project's established patterns for database transactions, error handling, and audit logging. You've identified three existing modules that exemplify these patterns: db_utils.py, error_handlers.py, and audit_logger.py. This is a one-off integration task — these patterns are well-documented in your team wiki and don't need additional project-level documentation. What's the most effective approach?
+
+- ❌ Describe the patterns from the three modules in natural language in your prompt, explaining the transaction handling approach, error format, and logging conventions Claude should follow.
+- ❌ Ask Claude to explore your codebase to find and understand the transaction, error handling, and logging patterns before generating the new module.
+- ✅ **Use @references to include the three modules directly in your prompt, giving Claude concrete code examples of the patterns to follow.** *(my reasoned answer — not confirmed by a shown key)*
+- ❌ Add documentation of each pattern to your CLAUDE.md file, establishing them as project conventions that Claude will apply automatically.
+
+**Glossary (thuật ngữ):**
+- *@references* = cú pháp tham chiếu file trực tiếp trong Claude Code (đưa nguyên văn nội dung file vào prompt bằng cách gõ @tên_file)
+- *one-off task* = tác vụ chỉ làm một lần (không lặp lại, không cần thiết lập quy ước lâu dài cho dự án)
+- *project-level convention* = quy ước ở cấp dự án (áp dụng tự động, lâu dài cho nhiều task trong tương lai — phù hợp với CLAUDE.md)
+- *concrete code example* = ví dụ code cụ thể (nguyên văn, chính xác — khác với mô tả bằng lời có thể bỏ sót chi tiết)
+
+---
+
+## Practice Test 2 — Q90: Selective @imports in CLAUDE.md for Monorepo Shared Standards (answered correctly — confirmed)
+
+| Situation | Best approach |
+|---|---|
+| Monorepo has multiple shared standards docs, each applicable to only some packages (by domain characteristics: handles user data, is API-facing, etc.); packages have no naming convention indicating applicability; maintainers know their own package's domain requirements; current CLAUDE.md files duplicate ALL standards into every package, most of it irrelevant | **Use @imports in each package's CLAUDE.md to reference only the specific standard files relevant to that package, based on the maintainer's own domain knowledge** |
+| Put all standards in the root CLAUDE.md with override instructions like "ignore security-rules.md when working in packages that don't handle user data" | ❌ Trap: fragile — relies on the model correctly applying conditional "ignore X unless Y" negative instructions across many packages; doesn't reduce irrelevant content, just asks the model to filter it at read time |
+| Create a shared-standards file that uses @imports to combine all three standards, then have each package's CLAUDE.md import that combined file | ❌ Trap: solves the duplication problem but not the irrelevance problem — every package still pulls in every standard regardless of whether it actually applies |
+| Create central claude/rules/ files for each standard with YAML frontmatter paths listing every package directory where that standard applies | ❌ Trap: over-engineered — centralizes and duplicates the domain knowledge that maintainers already have, creating a central file that must be updated every time a package's data-handling/API-facing status changes; more to maintain, not less |
+
+**Tips:** When different packages need different subsets of shared standards, and the people who know which subset applies are the individual package maintainers (not a central config or naming convention), let @imports be scoped per-package and decided locally by each maintainer. This avoids both duplication (each package's CLAUDE.md imports directly, no copy-pasted content) and irrelevance (only the applicable standards are pulled in) — without a fragile central override mechanism or a central mapping file that has to track every package's characteristics and be kept in sync as packages evolve.
+
+**Source check (official Exam Guide, Task Statement 3.1 — CLAUDE.md hierarchy & composition):**
+- 3.1 covers composing CLAUDE.md content via @imports for selective inclusion of shared documentation, as opposed to a monolithic root file with conditional exceptions or a centrally-maintained applicability map.
+
+### Example question (Practice Test 2, Q90 — answered correctly, confirmed)
+
+**Q:** Your monorepo contains shared coding standards in /docs/standards/security-rules.md (for services handling user data), testing-patterns.md (for all packages), and api-conventions.md (for API-facing services). Your 15 packages are organized by feature domain (/packages/auth/, /packages/billing/, /packages/notifications/, etc.) without naming conventions indicating which handle user data or expose APIs. Package maintainers are expected to configure their own local development settings, as they understand their package's domain requirements. Currently, all package CLAUDE.md files duplicate all three standards, applying irrelevant guidance. What's the most effective approach?
+
+- ❌ Put all standards in the root CLAUDE.md with override instructions like "ignore security-rules.md when working in packages that don't handle user data."
+- ❌ Create a shared-standards.md that uses @imports to combine all three standards, then have each package's CLAUDE.md import that combined file.
+- ❌ Create claude/rules/ files for each standard with YAML frontmatter paths listing every package directory where that standard should apply.
+- ✅ **Use @imports in each package's CLAUDE.md to reference only the specific standard files relevant to that package, based on the maintainer's domain knowledge.**
+
+**Glossary (thuật ngữ):**
+- *@imports* = cú pháp nhúng/tham chiếu file khác vào trong CLAUDE.md (cho phép ghép nhiều nguồn tài liệu mà không copy-paste)
+- *monorepo* = một repository chứa nhiều package/dự án con
+- *feature domain* = miền chức năng (cách tổ chức package theo nghiệp vụ, ví dụ auth, billing, notifications)
+- *YAML frontmatter* = phần metadata dạng YAML đặt ở đầu file (thường dùng để khai báo thuộc tính, phạm vi áp dụng...)
+- *override instructions* = hướng dẫn ghi đè/loại trừ (ví dụ "bỏ qua quy tắc X trong trường hợp Y") — dễ sai vì phụ thuộc model diễn giải đúng điều kiện phủ định
+
+---
+
+## Practice Test 2 — Q91: Resume Extraction — Guaranteed JSON Schema Compliance (confirms Q72 pattern, ⚠️ self-reasoned, no answer key shown)
+
+**Note:** Near-duplicate of Q72 (Task Statement 4.3 — Tool use & JSON schemas), same underlying rule, different scenario (extracting candidate information from resumes instead of calendar event details). No "Đúng/Sai" tag was visible on this screenshot (only a selected radio button), so this answer follows from the already-confirmed Q72 rule by reasoning, not a freshly confirmed key.
+
+### Example question (Practice Test 2, Q91 — answered by reasoning, matches confirmed Q72 rule)
+
+**Q:** The system needs to extract candidate information (name, contact details, skills, work experience, education) from uploaded resumes. The extracted data must strictly conform to a predefined JSON schema, as missing required fields or incorrect data types will cause downstream validation failures. What is the most reliable approach to ensure Claude's output consistently matches the schema?
+
+- ❌ Parse Claude's text response with regex patterns to extract JSON objects, using retry logic for malformed responses.
+- ❌ Include detailed JSON formatting instructions and a template example in the system prompt, asking Claude to output only valid JSON.
+- ❌ Make two separate API calls—first extracting information as text, then asking Claude to format that text as JSON.
+- ✅ **Define a tool with an input schema matching your required JSON structure and extract the data from Claude's tool_use response.** *(my reasoned answer, following the confirmed Q72 rule — not independently confirmed by a shown key)*
+
+**Glossary (thuật ngữ):**
+- *candidate information extraction* = trích xuất thông tin ứng viên (từ CV/resume — tên, liên hệ, kỹ năng, kinh nghiệm, học vấn)
+- *tool_use response* = phản hồi dạng gọi tool của model (chứa dữ liệu có cấu trúc theo đúng input schema đã định nghĩa cho tool đó)
