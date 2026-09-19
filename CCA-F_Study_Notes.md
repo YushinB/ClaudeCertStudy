@@ -1620,7 +1620,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Iterative Research Loops: Turning a Rigid Pipeline into a Feedback Loop: Exam Rule of Thumb
+## Practice Test 2 — Q66: Iterative Research Loops for Closing Analysis Gaps
 
 | Situation | Best approach |
 |---|---|
@@ -1654,7 +1654,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Integrating an External System (Jira): Existing MCP Server vs. Reinventing It: Exam Rule of Thumb
+## Practice Test 2 — Q67: Integrating Jira Through an Existing MCP Server
 
 | Situation | Best approach |
 |---|---|
@@ -2335,3 +2335,1599 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 **Glossary (thuật ngữ):**
 - *candidate information extraction* = trích xuất thông tin ứng viên (từ CV/resume — tên, liên hệ, kỹ năng, kinh nghiệm, học vấn)
 - *tool_use response* = phản hồi dạng gọi tool của model (chứa dữ liệu có cấu trúc theo đúng input schema đã định nghĩa cho tool đó)
+
+---
+
+## Practice Test 2 — Q92: Error-Type-Specific, Instructive Tool Error Messages (confirms existing isError pattern — answered correctly)
+
+**Note:** Near-duplicate/extension of the existing "MCP Tool Error Handling (isError)" rule (Task Statement 2.2) and Anthropic's tool-use documentation guidance ("Write instructive error messages... include what went wrong and what Claude should try next"). Same core lesson, new comparison set of implementation options.
+
+| Option | Verdict |
+|---|---|
+| **Return error-type-specific messages with `is_error: true`**, e.g., "order not found — try get_customer to search by phone" for data errors, "Database timeout (transient) — retry should succeed" for infrastructure errors | ✅ Keeps the `is_error` flag (Claude still knows it's a failure) while making the message itself instructive and specific to the error type — exactly what Anthropic's documented recommendation asks for |
+| Remove `is_error: true` and return error details as normal tool content, so Claude reasons about it as data | ❌ Trap: strips the failure signal entirely — Claude may treat the error text as valid data instead of recognizing a failed call |
+| Add an error classification step in the agentic loop that intercepts tool errors before Claude sees them, tags each as "retry"/"try_alternative"/"escalate" | ❌ Trap: unnecessary indirection — the tool itself already knows the error type; classifying it externally after the fact just adds a layer instead of having the source say so directly |
+| Implement retry logic with exponential backoff inside each tool implementation so transient errors are resolved transparently before any failure surfaces to Claude | ❌ Trap: business/permanent errors (e.g., order truly not found) will never succeed no matter how many silent retries — just delays and hides the failure; and even for genuinely transient errors, Claude never learns a retry happened, losing visibility into the loop |
+
+**Tips:** The fix keeps the structural error signal (`is_error: true`) intact and improves only the *content* of the message: name the specific error type and suggest a concrete next action. Don't strip the flag (that hides the failure), don't move classification to an external layer (the tool already knows), and don't silently retry inside the tool (permanent errors never resolve, and even transient retries should be visible to the agent, not hidden from it).
+
+**Source check (official Exam Guide, Task Statement 2.2 — MCP tool error handling; Anthropic tool-use documentation):**
+- "Write instructive error messages. Instead of generic errors like 'failed', include what went wrong and what Claude should try next."
+- Consistent with the existing isError rule: structured, error-type-specific metadata/messages let the agent choose retry vs. try-alternative vs. escalate, rather than guessing from a generic message or losing the failure signal altogether.
+
+### Example question (Practice Test 2, Q92 — answered correctly)
+
+**Q:** Anthropic's tool use documentation states: "Write instructive error messages. Instead of generic errors like 'failed', include what went wrong and what Claude should try next." A billing dispute agent uses lookup_order, which catches all exceptions and returns a tool_result with is_error: true and the message "execution failed". Monitoring shows two failure modes: the agent retries the identical call until hitting the turn limit, or it immediately calls escalate_to_human without trying alternative tools. Which change follows the documented recommendation and gives Claude the information it needs to select the correct recovery action for each error type?
+
+- ❌ Remove is_error: true and return the error details as normal tool content, so Claude reasons about the response as data rather than treating it as a flagged failure condition that biases retry behavior.
+- ❌ Add an error classification step in the agentic loop that intercepts tool errors before Claude sees them, tags each as "retry," "try_alternative," or "escalate," and adds that recommendation to the tool result.
+- ✅ **Return error-type-specific messages with is_error: true, e.g., "order not found-try get_customer to search by phone" for data errors and "Database timeout (transient)-retry should succeed" for infrastructure errors.**
+- ❌ Implement retry logic with exponential backoff inside each tool implementation so transient errors are resolved transparently within the tool before any failure result is surfaced to Claude in the agentic loop.
+
+**Glossary (thuật ngữ):**
+- *instructive error message* = thông báo lỗi mang tính hướng dẫn (nêu rõ vấn đề là gì và bước tiếp theo nên thử, thay vì chỉ nói "thất bại")
+- *is_error: true* = cờ đánh dấu tool_result là một lỗi (giữ nguyên để Claude biết đây là thất bại, không phải dữ liệu hợp lệ)
+- *transient error* = lỗi tạm thời (ví dụ timeout, mất kết nối tạm thời — thử lại thường sẽ thành công)
+- *data error* = lỗi do dữ liệu (ví dụ không tìm thấy đơn hàng — thử lại y hệt sẽ không giải quyết được, cần cách tiếp cận khác)
+- *escalate_to_human* = chuyển tiếp cho con người xử lý
+
+---
+
+## Practice Test 2 — Q93: Uniform MCP Error Responses, Reworded (exact near-duplicate of Q65 — answered correctly)
+
+**Note:** Same scenario and same correct answer as Q65 (Task Statement 2.2 — MCP isError / structured error metadata), reworded (`tool_code`/`tool_id` instead of `lookup_order`/order ID, "5 times" instead of "5+ times", JSON error shape `{"status": "error", "content": "{\"type\": \"Error\", \"message\": \"Operation failed.\"}"}`). See Q65 for the full rule table and reasoning — identical lesson: fix uniform/generic error responses with structured metadata (`error_category`, retryability, cause) at the source, not few-shot examples, not a separate `analyze_error` tool, not blanket retry-with-backoff.
+
+### Example question (Practice Test 2, Q93 — answered correctly; near-duplicate of Q65)
+
+**Q:** Production logs reveal inconsistent error handling: when tool_code fails, the agent sometimes retries 5 times (even if the tool_id doesn't exist), sometimes escalates immediately (premature for temporary network issues), and sometimes adds user-friendly explanation (inappropriate when the issue is a backend permission error). Investigation shows four MCP tool returns uniform error responses: {"status": "error", "content": "{\"type\": \"Error\", \"message\": \"Operation failed.\"}"}. The agent learns different types. What's the most effective improvement?
+
+- ✅ **Enhance error responses with structured metadata. Include error_category (transient/retriable/permission), reason, and a description of what caused the failure.**
+- ❌ Implement retry logic with exponential backoff in your MCP server for all errors, returning to the agent only after retries are exhausted.
+- ❌ Create an analyze_error MCP tool the agent calls after any failure to determine the error category and recommended action.
+- ❌ Add a few-shot examples to the system prompt demonstrating how to interpret error message patterns and select appropriate responses for each.
+
+
+## Practice Test 2 — Q94: Force Metadata Extraction Before Enrichment Tool Calls
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này được trích ra trực tiếp từ bài thi mẫu và chuẩn kiến thức **Claude Certified Architect – Foundations Exam Guide**:
+
+* **Phân vùng kiến thức chính (Primary Domains):**
+  * **Domain 2: Tool Design & MCP Integration** (Trọng số **18%**) [625–626].
+  * **Domain 4: Prompt Engineering & Structured Output** (Trọng số **20%**) [625–626].
+* **Task Statements liên quan:**
+  * **Task Statement 2.3:** Distribute tools appropriately across agents and configure tool choice [652–655].
+  * **Task Statement 4.3:** Enforce structured output using tool use and JSON schemas [678–681].
+* **Trích dẫn chuẩn từ Exam Guide:**
+  > *"Using tool_choice forced selection to ensure a specific tool is called first (e.g., forcing extract_metadata before enrichment tools), then processing subsequent steps in follow-up turns"*.
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Nhận diện dạng bài phụ thuộc dữ liệu (Data Dependency):** Khi bài toán xuất hiện hai nhóm công cụ — một nhóm trích xuất dữ liệu gốc (như `extract_metadata` để tạo mã DOI) và một nhóm làm phong phú dữ liệu (`lookup_citations`, `verify_doi` bắt buộc phải dùng DOI làm input) — thứ tự gọi công cụ mang tính quyết định.
+2. **Kỹ thuật "Forced Tool Selection":** Để đảm bảo 100% mô hình không bao giờ gọi nhầm công cụ enrichment trước, bạn phải bắt buộc chọn công cụ gốc ở lượt 1 bằng cú pháp `tool_choice: {"type": "tool", "name": "extract_metadata"}`.
+3. **Cạm bẫy vòng lặp vô tận (Infinite Loop Trap):** Ép buộc gọi một công cụ **chỉ được thực hiện ở lượt gọi API đầu tiên**. Nếu áp dụng cấu hình ép buộc này cho mọi lượt gọi API trong pipeline, hệ thống sẽ rơi vào vòng lặp gọi đi gọi lại công cụ đó mà không bao giờ chuyển sang bước tiếp theo.
+4. **Quy tắc bác bỏ các đáp án bẫy:**
+   * **Không dựa vào thứ tự mảng:** Claude API không ưu tiên chọn công cụ dựa trên vị trí của nó trong mảng `tools` [647–648].
+   * **`tool_choice: "any"` không chỉ định đích danh:** Chế độ `"any"` chỉ bắt buộc mô hình dùng *một công cụ bất kỳ*, không giải quyết được việc ép buộc đúng công cụ cần thiết.
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng:** **Set tool_choice to {"type": "tool", "name": "extract_metadata"} and process the enrichment requests in subsequent turns after receiving the extracted metadata.**
+  * **Phân tích:** Đây là thiết kế chuẩn chuẩn đoán theo tài liệu của Anthropic. Ở lượt (turn) 1, hệ thống ép Claude phải gọi `extract_metadata` để lấy mã DOI. Sau khi backend nhận được DOI và đưa vào lịch sử hội thoại, các lượt thoại tiếp theo sẽ mở lại chế độ mặc định (`"auto"`) để Claude sử dụng DOI đó gọi các công cụ enrichment như `lookup_citations` hay `verify_doi`.
+
+* **Lựa chọn 1 (Sai):** *Set tool_choice to {"type": "tool", "name": "extract_metadata"} for every API call in the pipeline, ensuring Claude always extracts metadata before any enrichment can occur.*
+  * **Phân tích:** Việc áp dụng cấu hình ép buộc này cho **mọi đợt gọi API** (for every API call) là một lỗi kiến trúc nghiêm trọng. Claude sẽ bị ép phải chạy đi chạy lại `extract_metadata` ở tất cả các lượt thoại và không bao giờ có thể tiến sang bước gọi các công cụ làm phong phú dữ liệu.
+
+* **Lựa chọn 2 (Sai):** *Set tool_choice to "any" so Claude must use a tool, combined with system prompt instructions prioritizing extract_metadata.*
+  * **Phân tích:** `tool_choice: "any"` chỉ đảm bảo rằng Claude sẽ chọn *ít nhất một công cụ bất kỳ* thay vì trả về văn bản tự nhiên. Việc kết hợp với System Prompt vẫn mang tính xác suất và sẽ thất bại khi câu hỏi của người dùng có chứa các từ khóa kích thích mô hình gọi trực tiếp `lookup_citations`.
+
+* **Lựa chọn 3 (Sai):** *Set tool_choice to "auto" and reorder the tool definitions so extract_metadata appears first in the tools array, since Claude prioritizes earlier-listed tools.*
+  * **Phân tích:** Đây là một quan niệm sai lầm về cơ chế vận hành của Claude API [647–648]. Mô hình không ưu tiên công cụ dựa trên thứ tự sắp xếp trong mảng `tools`, mà lựa chọn dựa trên sự phù hợp giữa ngữ cảnh hội thoại và phần mô tả (`description`) của từng công cụ [647–648].
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Forced Tool Selection** | Ép buộc chọn công cụ | Cấu hình `tool_choice` chỉ định rõ tên một công cụ bắt buộc Claude phải gọi ở lượt API hiện tại. |
+| **Enrichment Tools** | Công cụ làm phong phú dữ liệu | Các công cụ gọi API phụ để bổ sung thông tin (ví dụ: tìm trích dẫn, kiểm tra DOI) sau khi đã có dữ liệu cốt lõi. |
+| **Data Dependency** | Phụ thuộc dữ liệu | Ràng buộc trong đó Công cụ B bắt buộc phải sử dụng đầu ra (output) của Công cụ A làm đầu vào (input). |
+| **Multi-turn Workflow** | Quy trình xử lý đa lượt | Chuỗi tương tác gọi API nhiều lần, trong đó kết quả của lượt trước được nạp vào ngữ cảnh cho lượt sau [632–633, 654]. |
+| **`tool_choice: "auto"`** | Chế độ chọn công cụ tự động | Chế độ mặc định, cho phép Claude tự quyết định gọi công cụ hoặc trả về văn bản tự nhiên. |
+| **`tool_choice: "any"`** | Chế độ bắt buộc dùng công cụ | Bắt buộc Claude phải sử dụng ít nhất một công cụ trong danh sách, nhưng không cố định công cụ nào. |
+| **Infinite Loop Trap** | Bẫy vòng lặp vô tận | Lỗi lập trình khi duy trì ép buộc chọn một công cụ liên tục ở mọi đợt gọi API. |
+| **Tool Array Ordering** | Thứ tự mảng công cụ | Vị trí khai báo công cụ trong mảng `tools` (không có giá trị quyết định độ ưu tiên chọn công cụ của Claude) [647–648]. |
+
+
+## Practice Test 2 — Q95: Turn-Limited Agentic Review for Cross-File Findings
+
+**Đáp án đúng:**  
+**Redesign the review as a turn-limited agentic task where the model can read files and search the codebase via tools, following references to verify cross-file findings.** *(Thiết kế lại quy trình review thành một tác vụ tác tử giới hạn số lượt, trong đó mô hình có thể đọc tệp và tìm kiếm codebase thông qua các công cụ, truy vết các điểm tham chiếu để xác minh các phát hiện liên tệp)*.
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này thuộc đề cương chính thức của kỳ thi **Claude Certified Architect – Foundations (CCA-f)** [619–621]:
+
+*   **Phân vùng kiến thức chính (Primary Domains):**
+    *   **Domain 1: Agentic Architecture & Orchestration** (Trọng số **27%**).
+    *   **Domain 2: Tool Design & MCP Integration** (Trọng số **18%**).
+*   **Task Statements liên quan:**
+    *   **Task Statement 1.1:** Design and implement agentic loops for autonomous task execution [632–634].
+    *   **Task Statement 2.5:** Select and apply built-in tools (Read, Write, Edit, Bash, Grep, Glob) effectively [657–659].
+*   **Trích dẫn chuẩn từ tài liệu Exam Guide:**
+    *   > *"Building codebase understanding incrementally: starting with Grep to find entry points, then using Read to follow imports and trace flows, rather than reading all files upfront"*.
+    *   > *"Tracing function usage across wrapper modules by first identifying all exported names, then searching for each name across the codebase"*.
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Nhận diện bài toán "Bỏ sót ngữ cảnh do không được nạp" (Missing Context Problem):** Khi mô hình chỉ nhận được `diff` và các tệp bị thay đổi (`changed files`), nó hoàn toàn **không có thông tin** về các tệp không thay đổi (`unchanged files`). Vì vậy, các câu lệnh yêu cầu mô hình "suy luận" hoặc "đoán" (như Chain-of-Thought) đều thất bại vì thiếu dữ liệu đầu vào.
+2. **Quy tắc "Agentic Exploration vs Static Ingestion":** 
+   * **Nạp tĩnh (Static Ingestion):** Cố gắng nạp tất cả các tệp phụ thuộc vào prompt sẽ gây ra hiện tượng phình to token, phân tán sự chú ý (*Attention Dilution*) và hiệu ứng *"Lost in the Middle"* [688–689].
+   * **Tác tử linh hoạt (Agentic Exploration):** Cho phép mô hình dùng công cụ (`Grep` để tìm vị trí gọi hàm trên toàn dự án, `Read` để đọc tệp chứa vị trí đó) để chủ động truy vết khi phát hiện thay đổi [657–659].
+3. **Giới hạn an toàn "Turn-limited":** Chèn giới hạn lượt thoại (*turn-limited*) giúp tác tử không bị lặp vô tận (*infinite loop*) hoặc tiêu tốn quá nhiều chi phí API khi kiểm tra các dự án lớn.
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+*   **Đáp án đúng (Lựa chọn 4):** **Redesign the review as a turn-limited agentic task where the model can read files and search the codebase via tools, following references to verify cross-file findings.**
+    *   **Phân tích:** Đây là kiến trúc tối ưu nhất theo khuyến nghị của Anthropic [657–659]. Claude xem `diff`, thấy hàm `update_user()` bị đổi tham số, sau đó tự động dùng `Grep` quét toàn bộ codebase xem tệp nào đang gọi `update_user()`, và dùng `Read` mở đúng tệp đó ra kiểm tra xem cú pháp gọi cũ có bị lỗi không. Cách này giúp phát hiện 100% lỗi cross-file mà không cần nạp thừa token [658–659].
+
+*   **Lựa chọn 1 (Sai):** *Use static analysis to build a dependency graph of changed code, then expand the prompt to include all files within two dependency hops of any changed file.*
+    *   **Phân tích:** Mở rộng prompt nạp tĩnh tất cả các tệp trong bán kính 2 dependency hops sẽ khiến kích thước prompt bùng nổ (token bloat), dẫn đến hiện tượng trôi chỉ dẫn (*Instruction Degradation*) và làm suy giảm khả năng chú ý của Claude (*Attention Dilution / Lost in the Middle*) [688–689].
+
+*   **Lựa chọn 2 (Sai):** *Run parallel review passes per changed file with direct dependents included in each pass, then aggregate and deduplicate findings using a final summarization call.*
+    *   **Phân tích:** Chia nhỏ các đợt review song song kèm tệp phụ thuộc trực tiếp vẫn là phương pháp nạp tĩnh. Cách này vừa tốn kém chi phí gọi API gấp nhiều lần, vừa cồng kềnh quy trình mà vẫn có thể bỏ sót lỗi nếu liên kết phụ thuộc nằm ở hop thứ 2 hoặc xa hơn.
+
+*   **Lựa chọn 3 (Sai):** *Add chain-of-thought instructions asking the model to list all external references in the diff, then reason step-by-step about how each change might affect callers in other files.*
+    *   **Phân tích:** Chain-of-Thought không thể tạo ra thông tin mà mô hình không được cung cấp. Nếu các tệp chưa thay đổi không nằm trong prompt, Claude không thể "suy luận" chính xác những tệp đó đang truyền tham số gì, dẫn đến việc mô hình đoán mò (*hallucination*).
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Cross-file Interactions** | Tương tác liên tệp | Mối quan hệ phụ thuộc giữa các tệp khác nhau trong codebase (ví dụ: hàm ở tệp A gọi phương thức ở tệp B). |
+| **Turn-limited Agentic Task** | Tác vụ tác tử giới hạn số lượt | Tác tử hoạt động có cờ chặn số lượt vòng lặp tối đa để tránh tiêu tốn token vô hạn. |
+| **Incremental Exploration** | Khám phá tăng tiến | Phương pháp tìm kiếm codebase theo từng bước bằng `Grep` và `Read` thay vì nạp toàn bộ code ngay từ đầu [658–659]. |
+| **Dependency Hop** | Bước nhảy phụ thuộc | Cấp độ phụ thuộc trực tiếp hoặc gián tiếp giữa các module/tệp trong dự án. |
+| **Attention Dilution** | Phân tán sự chú ý | Hiện tượng mô hình giảm độ chính xác khi prompt chứa quá nhiều đoạn văn bản không liên quan [688–689]. |
+| **Static Context Injection** | Nạp ngữ cảnh tĩnh | Việc nhồi toàn bộ mã nguồn vào prompt trước khi gọi API thay vì cho phép mô hình tự tra cứu qua công cụ. |
+
+
+## Practice Test 2 — Q96: Local Retry with Exponential Backoff for Transient Tool Failures
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này được trích ra trực tiếp từ bài thi mẫu và chuẩn kiến thức **Claude Certified Architect – Foundations Exam Guide** [617–618]:
+
+* **Phân vùng kiến thức chính (Primary Domains):**
+  * **Domain 2: Tool Design & MCP Integration** (Trọng số **18%**) [623–624].
+  * **Domain 5: Context Management & Reliability** (Trọng số **15%**).
+* **Task Statements liên quan:**
+  * **Task Statement 2.2:** Implement structured error responses for MCP tools [648–650].
+  * **Task Statement 5.3:** Implement error propagation strategies across multi-agent systems [692–694].
+* **Trích dẫn chuẩn từ Exam Guide:**
+  > *"Knowledge of: The distinction between transient errors (timeouts, service unavailability), validation errors, and business errors..."*.  
+  > *"Skills in: Implementing local error recovery within subagents/tools for transient failures, propagating to the coordinator/agent only errors that cannot be resolved locally..."* [649–650, 694].  
+  > *"Knowledge of: Why silently suppressing errors (returning empty results as success) or terminating entire workflows on single failures are both anti-patterns"*.
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Phân loại lỗi HTTP (Transient vs. Permanent Errors):** Lỗi **HTTP 503 Service Unavailable** là lỗi hạ tầng/mạng tạm thời (*transient error*). Loại lỗi này thường chỉ diễn ra trong khoảnh khắc và có khả năng tự phục hồi rất cao sau một khoảng thời gian ngắn.
+2. **Nguyên tắc "Local Error Recovery" tại cấp công cụ:** Khi một công cụ gặp lỗi tạm thời từ API bên ngoài, cách xử lý hiệu quả nhất là tự động **thử lại (retry) kèm thuật toán lùi thời gian lũy thừa (exponential backoff)** ngay bên trong mã nguồn triển khai của công cụ (*tool implementation*) [649–650]. Việc này giúp xử lý triệt để sự cố mà không làm phiền đến tác tử LLM, tránh tốn lãng phí token và lượt thoại (turns) [649–650].
+3. **Nhận diện và loại bỏ Phản mẫu (Anti-Patterns):**
+   * **Nuốt lỗi / Giả lập thành công (Silently Suppressing Errors):** Trả về danh sách rỗng hoặc phản hồi trống khi gặp lỗi là phản mẫu bị cấm hoàn toàn trong kiến trúc Anthropic.
+   * **Báo lỗi ngay lập tức:** Trả lỗi về cho Claude ngay ở lần gặp 503 đầu tiên khi chưa thử retry ở cấp công cụ sẽ bắt LLM phải xử lý một sự cố tạm thời không cần thiết [649–650].
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng:** **Automatically retry the request up to five times with exponential backoff before returning results to the agent.**
+  * **Phân tích:** Đây là thiết kế chuẩn theo hướng dẫn của Anthropic cho lỗi tạm thời (*transient failures*) [649–650]. Việc tự động retry với exponential backoff giúp công cụ tự phục hồi các đợt gián đoạn dịch vụ ngắn từ API hãng hàng không mà không làm gián đoạn vòng lặp tác tử (*agentic loop*) [649–650]. Nếu sau các lần thử lại vẫn thất bại, công cụ mới trả về thông báo lỗi có cấu trúc kèm cờ `isError: true` [648–649].
+
+* **Lựa chọn 2 (Sai):** *Log the error internally and return an empty response, letting the model continue without the flight data.*
+  * **Phân tích:** Vi phạm nguyên tắc báo lỗi của Anthropic. Việc im lặng trả về phản hồi rỗng (*silently suppressing errors*) khiến Claude không nhận biết được sự cố API và sẽ đưa ra quyết định sai lệch ở các bước tiếp theo do thiếu thông tin.
+
+* **Lựa chọn 3 (Sai):** *Return an error message in the tool result explaining the service is temporarily unavailable.*
+  * **Phân tích:** Việc đẩy ngay thông báo lỗi về cho Claude ở lần 503 đầu tiên mà không thử lại (retry) ở cấp triển khai công cụ sẽ bắt tác tử phải dừng luồng xử lý hoặc chuyển hướng không cần thiết cho một lỗi tạm thời có thể tự hết sau vài mili-giây [649–650].
+
+* **Lựa chọn 4 (Sai):** *Return an empty flight list as if the search succeeded but found no matching flights.*
+  * **Phân tích:** Đây là phản mẫu nguy hiểm nhất trong thiết kế công cụ (*returning empty results as success*). Trả về danh sách chuyến bay rỗng sẽ khiến Claude báo sai cho người dùng rằng "không có chuyến bay nào phù hợp", trong khi thực tế là do API bị gián đoạn kết nối.
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Transient Error** | Lỗi tạm thời / Lỗi ngắt quãng | Lỗi hạ tầng hoặc mạng diễn ra trong thời gian ngắn (như Timeout, 503 Service Unavailable) có thể tự hết khi thử lại. |
+| **Local Error Recovery** | Tự khôi phục lỗi cục bộ | Kỹ thuật xử lý lỗi ngay bên trong mã nguồn triển khai của công cụ/subagent trước khi đẩy lỗi lên cấp quản lý cao hơn [649–650, 694]. |
+| **Exponential Backoff** | Lùi thời gian chờ lũy thừa | Thuật toán tăng dần khoảng thời gian chờ giữa các lần thử lại (ví dụ: 1s, 2s, 4s, 8s) để tránh làm quá tải API mục tiêu. |
+| **Silently Suppressing Errors** | Nuốt lỗi âm thầm | Phản mẫu thiết kế khi công cụ gặp sự cố nhưng lại trả về kết quả rỗng hoặc báo thành công giả lập. |
+| **Valid Empty Results** | Kết quả rỗng hợp lệ | Truy vấn thành công nhưng hệ thống không tìm thấy dữ liệu khớp (phân biệt hoàn toàn với trường hợp truy vấn thất bại do lỗi kết nối). |
+| **IsRetryable Flag** | Cờ báo khả năng thử lại | Cờ dữ liệu có cấu trúc trả về cho tác tử để cho biết lỗi này có nên tiếp tục gọi lại công cụ hay không. |
+
+---
+
+## Practice Test 2 — Q97: Split Generic Workout Logging into Purpose-Specific Tools
+
+**Đáp án đúng:**  
+**Split into `log_cardio_workout` (with `duration_minutes` or `distance_miles` parameters) and `log_strength_workout` (with `reps` and `sets` parameters).** *(Tách thành hai công cụ riêng biệt: `log_cardio_workout` (chứa các tham số `duration_minutes` hoặc `distance_miles`) và `log_strength_workout` (chứa các tham số `reps` và `sets`))*.
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này thuộc đề cương chính thức của kỳ thi **Claude Certified Architect – Foundations (CCA-f)** [617–618]:
+
+*   **Phân vùng kiến thức chính (Primary Domain):** **Domain 2: Tool Design & MCP Integration** (Quản lý & Thiết kế Công cụ, Tích hợp MCP – chiếm **18%** tổng trọng số đề thi) [623–624].
+*   **Task Statement:** **Task Statement 2.1: Design effective tool interfaces with clear descriptions and boundaries** (Thiết kế giao diện công cụ hiệu quả với mô tả và ranh giới rõ ràng) [645–648].
+*   **Trích dẫn nguyên văn từ Exam Guide Blueprint:**
+    *   *Kiến thức (Knowledge of):* 
+        > *"How ambiguous or overlapping tool descriptions cause misrouting..."*.
+    *   *Kỹ năng (Skills in):* 
+        > *"Splitting generic tools into purpose-specific tools with defined input/output contracts (e.g., splitting a generic analyze_document into extract_data_points, summarize_content, and verify_claim_against_source)"*.
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1.  **Nguyên tắc "Tách công cụ dùng chung" (Tool Splitting vs. Generic Tools):**  
+    Khi một công cụ dùng chung (`generic tool`) như `log_workout` gánh quá nhiều chức năng thuộc các nhóm dữ liệu khác nhau (cardio vs. strength) dẫn đến tỷ lệ truyền sai tham số cao (23%), giải pháp kiến trúc triệt để nhất của Anthropic là **tách công cụ dùng chung thành các công cụ chuyên biệt** (`purpose-specific tools`).
+2.  **Ràng buộc ở cấp Schema (Schema Constraints) > Hướng dẫn Prompt (Prose Instructions):**  
+    Việc tách schema thành hai hợp đồng dữ liệu riêng biệt khiến các sự kết hợp sai lệch (như truyền `reps` cho bài tập chạy bộ) trở nên **bất khả thi về mặt cấu trúc** (*structurally impossible*). Mô hình không thể chọn nhầm tham số vì các tham số không hợp lệ hoàn toàn không tồn tại trong schema của công cụ đó [637–638, 647].
+3.  **Xử lý chủ động (Proactive Prevention) > Xử lý bị động (Reactive Retry):**  
+    Đừng dựa vào việc trả lỗi từ server để bắt mô hình thử lại (*retry*), vì cách làm này gây lãng phí token và gia tăng độ trễ (*latency*). Hãy triệt tiêu nguy cơ sinh lỗi ngay từ khâu thiết kế giao diện công cụ [647, 649–650].
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+*   **Đáp án đúng:** **Split into `log_cardio_workout` (with `duration_minutes` or `distance_miles` parameters) and `log_strength_workout` (with `reps` and `sets` parameters).**
+    *   **Phân tích:** Đây là thiết kế chuẩn xác nhất theo hướng dẫn của Anthropic. Việc chia tách thành hai công cụ với tham số rõ ràng giúp loại bỏ hoàn toàn khả năng mô hình truyền nhầm `reps` cho chạy bộ hay `miles` cho đẩy ngực. Mọi cuộc gọi công cụ sẽ đạt độ chính xác 100% ở cấp độ cú pháp schema.
+
+*   **Lựa chọn 1 (Sai):** *Add explicit examples to the tool description showing valid combinations (e.g., "For running: use minutes or miles. For push-ups: use reps") with constraints for each exercise category.*
+    *   **Phân tích:** Bổ sung ví dụ vào phần mô tả công cụ (*tool description*) giúp mô hình hiểu ngữ cảnh tốt hơn, nhưng đây vẫn là giải pháp dựa trên chỉ dẫn văn bản tự nhiên mang tính xác suất. Tỷ lệ lỗi 23% có thể giảm nhưng **không thể triệt tiêu hoàn toàn** vì schema của công cụ `log_workout` vẫn cho phép truyền các tham số sai [646–647].
+
+*   **Lựa chọn 2 (Sai):** *Add enum constraints on measurement limiting values to "minutes", "miles", "reps", or "sets" to prevent arbitrary measurement strings.*
+    *   **Phân tích:** Việc thêm `enum` chỉ chặn được việc người dùng/mô hình nhập các chuỗi ký tự lạ (như "hours" hay "kilograms"), nhưng **hoàn toàn không ngăn được lỗi kết hợp sai**. Mô hình vẫn có thể chọn `exercise_type: "running"` đi kèm với một giá trị enum hợp lệ trong danh sách là `measurement: "reps"`.
+
+*   **Lựa chọn 4 (Sai):** *Implement server-side validation returning descriptive errors for invalid combinations, allowing the agent to retry with corrections.*
+    *   **Phân tích:** Đây là cách xử lý bị động (*reactive error handling*). Mặc dù trả về thông báo lỗi có cấu trúc là một thực hành tốt [648–650], nhưng việc để 23% số lượng cuộc gọi bị thất bại rồi bắt tác tử phải xử lý thử lại (*retry loop*) sẽ làm tăng gấp đôi độ trễ (*latency*) và chi phí API không cần thiết, trong khi hoàn toàn có thể phòng ngừa từ sớm bằng cách tách schema.
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Generic Tool** | Công cụ dùng chung cồng kềnh | Công cụ ôm đồm quá nhiều chức năng/tham số của các nhóm tác vụ khác nhau. |
+| **Purpose-Specific Tools** | Các công cụ chuyên biệt | Các công cụ được chia nhỏ với hợp đồng đầu vào/đầu ra (schema) được xác định chặt chẽ. |
+| **Tool Splitting** | Kỹ thuật tách công cụ | Mẫu thiết kế chia một công cụ cồng kềnh thành các công cụ nhỏ để triệt tiêu lỗi chọn sai tham số. |
+| **Schema-Level Constraint** | Ràng buộc ở cấp độ Schema | Việc giới hạn khả năng truyền sai dữ liệu trực tiếp bằng cấu trúc JSON Schema thay vì câu lệnh prompt [637–638]. |
+| **Parameter Mismatch** | Lỗi bất đồng bộ / lệch tham số | Hiện tượng tác tử truyền các tham số không tương thích với loại tác vụ (ví dụ: `reps` cho bài tập chạy). |
+| **Enum Constraint** | Ràng buộc tập giá trị cố định | Việc giới hạn một trường dữ liệu chỉ được phép nhận các giá trị trong một danh sách `enum` định sẵn. |
+| **Reactive Error Handling** | Xử lý lỗi bị động | Cách xử lý đợi lỗi xảy ra trên server rồi mới trả thông báo bắt tác tử gọi lại công cụ (*retry*) [648–650]. |
+| **Proactive Error Prevention** | Phòng ngừa lỗi chủ động | Kỹ thuật thiết kế giao diện/schema chuẩn xác để ngăn chặn lỗi xảy ra ngay từ lần gọi đầu tiên. |
+
+
+## Practice Test 2 — Q98: Clarifying Action-Type Ambiguity Before Execution
+
+**Đáp án đúng:**  
+**Ask one clarifying question about action type: play now or configure for later** *(Đặt một câu hỏi làm rõ duy nhất về loại hành động: phát nhạc ngay hay cấu hình cho sau này)*.
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này thuộc đề cương chính thức của kỳ thi **Claude Certified Architect – Foundations (CCA-f)** [617–618]:
+
+*   **Phân vùng kiến thức chính (Primary Domains):**
+    *   **Domain 5: Context Management & Reliability** (Trọng số **15%**) [623–624].
+    *   **Domain 1: Agentic Architecture & Orchestration** (Trọng số **27%**) [623–624].
+*   **Task Statements liên quan:**
+    *   **Task Statement 5.2:** Design effective escalation and ambiguity resolution patterns (Thiết kế các mẫu xử lý sự mơ hồ và chuyển giao hiệu quả) [689–692].
+    *   **Task Statement 1.4:** Implement multi-step workflows with enforcement and handoff patterns [637–639].
+*   **So sánh hai dạng mơ hồ (Ambiguity Comparison):**
+    1.  *Mơ hồ về Tham số (Parameter Ambiguity - ví dụ câu hỏi đặt địa điểm tổ chức tiệc trước đó):* Ý định cốt lõi đã rõ ràng ("đặt chỗ"), chỉ thiếu tham số (ngày, số khách). Giải pháp tối ưu là nêu giả định hợp lý và đưa ra gợi ý ngay [689–692].
+    2.  *Mơ hồ về Loại Hành động (Action Type Ambiguity - câu hỏi hiện tại):* Câu lệnh "Set up my focus music" có thể dẫn đến 3 nhánh luồng công việc hoàn toàn khác nhau (phát nhạc ngay, tạo playlist, hay cài đặt tùy chọn) [689–692]. Giải pháp tối ưu là đặt **1 câu hỏi làm rõ tập trung** vào ranh giới phân nhánh hành động chính (*play now vs configure for later*) trước khi thực thi [689–692].
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1.  **Nhận diện loại sự mơ hồ (Intent vs. Parameter):**
+    *   Nếu mơ hồ về *loại hành động* (chưa biết người dùng muốn nghe nhạc hay muốn cài đặt) \\(\rightarrow\\) **Đặt 1 câu hỏi định hướng nhánh** (*one targeted clarifying question*) với các lựa chọn ngắn gọn nhất [689–692].
+    *   Nếu mơ hồ về *chi tiết tham số* \\(\rightarrow\\) Đưa ra **giả định công khai** và chạy thử nghiệm ngay.
+2.  **Tránh bẫy "Đoán mò ý định" (Intent Guessing Trap):** Tự ý thực hiện một hành động phức tạp (phát nhạc ngẫu nhiên hoặc tạo playlist) khi người dùng mới có thể đang muốn thiết lập gu âm nhạc sẽ gây trải nghiệm gượng ép và không chính xác.
+3.  **Tránh bẫy "Ma sát nhận thức cao" (High Cognitive Friction Trap):** Bắt người dùng mới phải trả lời ngay một biểu mẫu chi tiết (thể loại, nhịp độ, nghệ sĩ) ngay từ tin nhắn đầu tiên sẽ làm tăng tỷ lệ bỏ dở phiên làm việc (*abandonment rate*) [689–692].
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+*   **Đáp án đúng:** **Ask one clarifying question about action type: play now or configure for later**
+    *   *Phân tích:* Đây là thiết kế tương tác tối ưu nhất [689–692]. Câu hỏi làm rõ ngắn gọn với 2 lựa chọn phân nhánh (*Play now* vs *Configure for later*) giúp xác định chính xác mục tiêu của người dùng chỉ sau 1 lượt phản hồi đơn giản, triệt tiêu nguy cơ đoán sai ý định mà không gây ma sát nhận thức [689–692].
+
+*   **Lựa chọn 2 (Sai):** *Play popular focus tracks Immediately and let the user redirect if needed*
+    *   *Phân tích:* Đây là phản mẫu đoán mò ý định. Nếu người dùng muốn thiết lập danh sách nhạc riêng hoặc điều chỉnh tùy chọn trước, việc tự ý phát nhạc ngẫu nhiên sẽ làm gián đoạn trải nghiệm và bắt người dùng phải thao tác dừng/sửa đổi [689–692].
+
+*   **Lựa chọn 3 (Sai):** *Create a new "Focus" playlist with curated tracks and notify the user it's ready.*
+    *   *Phân tích:* Tự động tạo tài nguyên mới (playlist) trên tài khoản người dùng khi chưa có sự xác nhận sẽ tạo ra các dữ liệu thừa không mong muốn nếu ý định thực sự của họ chỉ là nghe một bản nhạc nhanh.
+
+*   **Lựa chọn 4 (Sai):** *Start preference configuration by asking about genres, temps, and artists they prefer for focus.*
+    *   *Phân tích:* Đây là bẫy ma sát nhận thức lớn (*High Cognitive Friction*). Việc ép người dùng trả lời một loạt câu hỏi phỏng vấn chi tiết về thể loại, nhịp độ, nghệ sĩ ngay ở tin nhắn đầu tiên sẽ gây quá tải thông tin và làm tăng tỷ lệ người dùng thoát ứng dụng (*abandonment rate*) [689–692].
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Action Type Ambiguity** | Mơ hồ về loại hành động | Tình huống câu lệnh có thể thuộc về các mục tiêu/ý định cốt lõi hoàn toàn khác nhau [689–692]. |
+| **Targeted Clarifying Question** | Câu hỏi làm rõ có mục tiêu | Câu hỏi ngắn gọn, tập trung vào 1 điểm mấu chốt để phân nhánh luồng xử lý với ma sát thấp nhất [689–692]. |
+| **Intent Guessing** | Đoán mò ý định | Phản mẫu thiết kế khi hệ thống tự ý thực hiện một hành động chính khi chưa rõ người dùng muốn gì. |
+| **Cognitive Friction** | Ma sát nhận thức | Mức độ nỗ lực suy nghĩ/thao tác mà người dùng phải bỏ ra trong một lượt hội thoại. |
+| **Parameter Ambiguity** | Mơ hồ về tham số | Tình huống ý định chính đã rõ nhưng thiếu các thông số chi tiết (ngày, giờ, số lượng) [689–692]. |
+| **Abandonment Rate** | Tỷ lệ bỏ dở phiên | Tỷ lệ người dùng thoát hoặc ngừng tương tác do luồng hội thoại quá phức tạp/nhiều câu hỏi gạn hỏi [689–692]. |
+
+---
+
+## Practice Test 2 — Q99: Explicit Assumptions for Parameter Ambiguity
+
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi này thuộc đề cương chính thức của kỳ thi **Claude Certified Architect – Foundations (CCA-f)** [617–618]:
+
+* **Phân vùng kiến thức chính (Primary Domain):** **Domain 5: Context Management & Reliability** (Quản lý ngữ cảnh & Độ tin cậy – chiếm **15%** tổng trọng số đề thi) [623–624].
+* **Task Statement:** **Task Statement 5.2: Design effective escalation and ambiguity resolution patterns** (Thiết kế các mẫu xử lý sự mơ hồ và chuyển giao hiệu quả) [689–692].
+* **Trích dẫn chuẩn từ Exam Guide:**
+  > *"Knowledge of: How multiple clarifying questions create conversational friction and high abandonment rates..."* [689–692].  
+  > *"Skills in: Instructing the agent to state explicit assumptions based on available context and proceed with recommendations while inviting corrections..."* [689–692].
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Nguyên tắc "Tối ưu hóa ma sát tương tác" (Reducing Conversational Friction):** Khi người dùng đưa ra câu lệnh mơ hồ về chi tiết/yêu cầu (như *"Can you help me with the report?"*), việc bắt họ trả lời một danh sách gồm 3–4 câu hỏi làm rõ cùng lúc sẽ gây quá tải nhận thức (*cognitive overload*), dẫn đến tỷ lệ bỏ dở phiên cao (40%) [689–692].
+2. **Công thức giải quyết mơ hồ chuẩn của Anthropic:**
+   \\[\text{Mô hình đưa ra Giả định rõ ràng (Explicit Assumptions)} + \text{Thực thi tạo kết quả ban đầu} + \text{Mời người dùng điều chỉnh (Invite Corrections)}\\]
+3. **Phân biệt hai kỹ thuật xử lý sự mơ hồ:**
+   * **Nêu giả định công khai (Option đúng trong bài này):** Áp dụng khi câu lệnh thiếu tham số/chi tiết nhưng mô hình có thể dự đoán được các phương án khả thi dựa trên ngữ cảnh [689–692].
+   * **Hỏi 1 câu hỏi định hướng:** Chỉ áp dụng khi câu lệnh đứng trước các ranh giới phân nhánh hành động hoàn toàn khác nhau (như *Phát nhạc ngay v.s Cấu hình cài đặt*) [689–692].
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng:** **Modify the system prompt to instruct the assistant to make reasonable assumptions from available context, state those assumptions explicitly, and offer to adjust if the interpretation is wrong.**
+  * **Phân tích:** Đây là thiết kế tương tác tối ưu nhất được Anthropic khuyến nghị [689–692]. Tác tử sẽ tự động chọn một báo cáo gần nhất hoặc một dạng hỗ trợ phổ biến (ví dụ: *"Tôi giả định bạn muốn xem lại báo cáo doanh thu tuần này. Dưới đây là bản kiểm tra... Nếu bạn muốn chỉnh sửa báo cáo khác, hãy báo cho tôi biết"*). Cách này giúp người dùng nhìn thấy kết quả ngay lập tức để phản hồi, triệt tiêu ma sát tương tác và giảm tỷ lệ bỏ cuộc [689–692].
+
+* **Lựa chọn 1 (Sai):** *Limit the assistant to one clarifying question per turn, using conversation history to accumulate answers over multiple exchanges rather than requesting everything upfront.*
+  * **Phân tích:** Việc giới hạn 1 câu hỏi mỗi lượt chỉ kéo dài số lượt hội thoại (*conversational turns*) ra nhiều đợt liên tiếp. Người dùng vẫn phải mất 3 lượt trò chuyện mới bắt đầu nhận được kết quả, điều này vẫn tạo ra ma sát tương tác cao [689–692].
+
+* **Lựa chọn 2 (Sai):** *Add a preprocessing step using a smaller model to classify request ambiguity on a 1-5 scale, routing high-ambiguity requests to a clarification dialog and low-ambiguity requests directly to the assistant.*
+  * **Phân tích:** Lựa chọn này làm cồng kềnh hạ tầng (*over-engineering*) bằng cách thêm một mô hình phân loại trung gian, nhưng **không hề giải quyết được vấn đề trải nghiệm người dùng**. Với các yêu cầu có độ mơ hồ cao, hệ thống vẫn bắt người dùng trải qua luồng hỏi gạn gây khó chịu [689–692].
+
+* **Lựa chọn 4 (Sai):** *Create a lookup table of common request patterns with predefined default interpretations, having the assistant respond with those defaults without stating the assumptions made.*
+  * **Phân tích:** Đưa ra phản hồi mặc định nhưng **ngầm định (không nêu rõ giả định cho người dùng)** là một phản mẫu nguy hiểm (*dangerous anti-pattern*). Người dùng sẽ không hiểu tại sao hệ thống lại xử lý sai báo cáo của họ và không biết cách đưa ra câu lệnh điều chỉnh thích hợp [689–692].
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Conversational Abandonment Rate** | Tỷ lệ bỏ dở phiên hội thoại | Tỷ lệ người dùng thoát ứng dụng khi luồng tương tác quá phức tạp hoặc bị hỏi gạn quá nhiều [689–692]. |
+| **Explicit Assumptions** | Giả định công khai | Kỹ thuật tác tử tự động chọn giá trị khả thi và thông báo rõ ràng cho người dùng biết [689–692]. |
+| **Conversational Friction** | Ma sát hội thoại | Nỗ lực nhận thức mà người dùng phải bỏ ra để trả lời các câu hỏi làm rõ của tác tử [689–692]. |
+| **Predefined Default Interpretation** | Diễn giải mặc định định sẵn | Việc hệ thống chọn một phương án mặc định (nếu ngầm định không nêu rõ sẽ dễ gây hiểu lầm) [689–692]. |
+| **Multi-question Response** | Phản hồi chứa nhiều câu hỏi | Phản mẫu thiết kế khi tác tử hỏi một lúc 3–4 câu hỏi gạn hỏi thông tin ở một lượt thoại [689–692]. |
+
+
+
+## Practice Test 2 — Q100: Direct Execution for a Simple, Well-Scoped Change
+
+**Đáp án đúng:**  
+**Use direct execution to make the change** *(Sử dụng chế độ thực thi trực tiếp để thực hiện thay đổi)*.
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này trích ra trực tiếp từ bài thi mẫu và chuẩn kiến thức **Claude Certified Architect – Foundations Exam Guide**:
+
+* **Phân vùng kiến thức chính (Primary Domain):** **Domain 3: Claude Code Configuration & Workflows** (Trọng số **20%**).
+* **Task Statement:** **Task Statement 3.4: Determine when to use plan mode vs direct execution** (Xác định khi nào nên dùng chế độ lập kế hoạch v.s thực thi trực tiếp) [664–666].
+* **Trích dẫn chuẩn từ Exam Guide:**
+  > *"Direct execution is appropriate for simple, well-scoped changes (e.g., adding a single validation check to one function)"*.  
+  > *"Selecting direct execution for well-understood changes with clear scope (e.g., a single-file bug fix with a clear stack trace, adding a date validation conditional)"*.
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Quy tắc ranh giới giữa Direct Execution và Plan Mode:**
+   * **Thực thi trực tiếp (Direct Execution):** Dành cho các tác vụ đơn giản, phạm vi hẹp và rõ ràng (*well-scoped*), chỉ tác động lên 1 tệp hoặc 1 hàm duy nhất (ví dụ: thêm câu lệnh điều kiện `if`, sửa một lỗi đơn lẻ có stack trace rõ ràng) [664–666].
+   * **Chế độ Lập kế hoạch (Plan Mode):** Dành cho các tác vụ phức tạp, tái cấu trúc hệ thống (*architectural decisions*), hoặc thay đổi liên quan đến nhiều tệp (*multi-file modifications*) [664–665].
+2. **Nhận diện bẫy Over-engineering:** Khi đề bài mô tả một yêu cầu **cực kỳ cụ thể và phạm vi hẹp** (chỉ thêm một câu lệnh điều kiện kiểm tra ngày trong 1 hàm duy nhất thuộc 1 tệp), bất kỳ phương án nào đề xuất mở **Plan Mode** hay **Extended Thinking** đều là bẫy làm cồng kềnh quy trình và lãng phí tài nguyên/token [664–666].
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng (Lựa chọn 2):** **Use direct execution to make the change**
+  * **Phân tích:** Đây là lựa chọn chính xác tuyệt đối theo nguyên văn hướng dẫn của Anthropic [664–666]. Với một tác vụ đơn giản, đã xác định chính xác vị trí (1 hàm trong 1 tệp) và nội dung cần sửa (thêm lệnh kiểm tra ngày ở tương lai), việc dùng **Direct Execution** giúp Claude Code hoàn thành công việc ngay lập tức mà không làm tốn token hay thời gian hội thoại [664–666].
+
+* **Lựa chọn 1 (Sai):** *Enter plan mode to analyze how the validation might impact other parts of the reservation flow*
+  * **Phân tích:** Việc bật Plan Mode để phân tích ảnh hưởng cho một câu lệnh kiểm tra logic cơ bản trong phạm vi 1 hàm là không cần thiết và gây lãng phí thời gian [664–666]. Plan Mode chỉ dành cho các thay đổi kiến trúc lớn tác động liên tệp [664–665].
+
+* **Lựa chọn 3 (Sai):** *Start with extended thinking mode enabled to ensure thorough reasoning about the validation logic*
+  * **Phân tích:** Logic kiểm tra một ngày có ở tương lai hay không (`event_date > current_date`) là một phép so sánh đơn giản, không đòi hỏi tư duy sâu mở rộng (*extended thinking*). Bật extended thinking cho tác vụ này sẽ làm gia tăng độ trễ (*latency*) và chi phí API không cần thiết.
+
+* **Lựa chọn 4 (Sai):** *Enter plan mode first to create a detailed implementation strategy before making the change*
+  * **Phân tích:** Lập chiến lược triển khai chi tiết qua Plan Mode là phản mẫu (*anti-pattern*) đối với các tác vụ hẹp. Đề bài đã cho sẵn chiến lược (thêm conditional check vào hàm hiện có), do đó bước lập kế hoạch bị thừa [664–666].
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Direct Execution** | Thực thi trực tiếp | Chế độ cho phép Claude Code chỉnh sửa code/thực thi lệnh ngay lập tức cho các tác vụ phạm vi hẹp, đơn giản [664–666]. |
+| **Plan Mode** | Chế độ lập kế hoạch | Chế độ phân tích codebase và lập chiến lược trước khi sửa code, dùng cho các thay đổi lớn/nhiều tệp [664–665]. |
+| **Well-Scoped Change** | Thay đổi có phạm vi rõ ràng | Yêu cầu chỉnh sửa đã xác định chính xác vị trí, chức năng và không có nguy cơ xung đột kiến trúc [664–666]. |
+| **Extended Thinking Mode** | Chế độ tư duy mở rộng | Chế độ kích hoạt khả năng suy luận chuỗi dài của mô hình cho các bài toán logic hoặc thuật toán phức tạp. |
+| **Multi-File Modification** | Chỉnh sửa trên nhiều tệp | Tác vụ tác động đến nhiều module/tệp cùng lúc (kịch bản bắt buộc nên cân nhắc Plan Mode) [664–665]. |
+| **Architectural Decision** | Quyết định kiến trúc | Các lựa chọn thiết kế hệ thống cấp cao (như chuyển monolith sang microservices, đổi thư viện cốt lõi) [664–665]. |
+
+---
+
+## Practice Test 2 — Q101: PostToolUse Hook for Deterministic Code Formatting
+
+**Đáp án đúng:**  
+**Configure a Post ToolUse hook with an Edit|Write matcher that automatically runs Prettier on each file Claude modifies.** *(Cấu hình một hook PostToolUse với bộ khớp Edit|Write để tự động chạy Prettier trên mỗi tệp mà Claude chỉnh sửa)*.
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này thuộc đề cương chính thức của kỳ thi **Claude Certified Architect – Foundations (CCA-f)**:
+
+*   **Phân vùng kiến thức chính (Primary Domains):**
+    *   **Domain 1: Agentic Architecture & Orchestration** (Trọng số **27%**) [623–624].
+    *   **Domain 3: Claude Code Configuration & Workflows** (Trọng số **20%**) [623–624].
+*   **Task Statements liên quan:**
+    *   **Task Statement 1.5:** Apply Agent SDK hooks for tool call interception and data normalization (Áp dụng các hook trong Agent SDK để can thiệp cuộc gọi công cụ và chuẩn hóa dữ liệu) [639–641].
+    *   **Task Statement 1.4:** Implement multi-step workflows with enforcement and handoff patterns [637–639].
+*   **Trích dẫn chuẩn từ tài liệu Exam Guide Blueprint:**
+    *   *Kiến thức (Knowledge of):* 
+        > *"The difference between programmatic enforcement (hooks, prerequisite gates) and prompt-based guidance for workflow ordering"*.
+        > *"When deterministic compliance is required ..., prompt instructions alone have a non-zero failure rate"* [637–638].
+        > *"The distinction between using hooks for deterministic guarantees versus relying on prompt instructions for probabilistic compliance"* [640–641].
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1.  **Quy tắc "Tuân thủ định mệnh (Deterministic) v.s Tuân thủ xác suất (Probabilistic)":**
+    *   **Hướng dẫn qua Prompt (Prompt Instructions / Rules / Skills):** Mọi câu lệnh trong `CLAUDE.md`, `.claude/rules/`, hay `SKILL.md` dù có nhấn mạnh bằng chữ hoa (`IMPORTANT: MUST`) đều mang tính **xác suất (probabilistic)** và luôn có tỷ lệ thất bại nhất định [637–638, 640–641].
+    *   **Thực thi bằng Lập trình (Programmatic Enforcement / Hooks):** Khi một quy chuẩn yêu cầu độ chính xác tuyệt đối 100% (như định dạng code, kiểm tra an ninh, hoặc xác thực danh tính), cách duy nhất là dùng **Hook / Prerequisite Gate** để thực thi bằng code tự động [637–641].
+2.  **Kỹ thuật chặn PostToolUse cho Edit/Write:** Khi Claude thực hiện hành động ghi hoặc sửa tệp (`Edit` hoặc `Write`), hook `PostToolUse` sẽ can thiệp ngay sau đợt gọi công cụ đó để chạy công cụ định dạng code (như Prettier) trực tiếp trên tệp thô, đảm bảo 100% code lưu vào đĩa đều đúng định dạng [639–640].
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+*   **Đáp án đúng (Lựa chọn 1):** **Configure a Post ToolUse hook with an Edit|Write matcher that automatically runs Prettier on each file Claude modifies.**
+    *   **Phân tích:** Đây là thiết kế kiến trúc chuẩn xác nhất theo tài liệu của Anthropic [639–641]. Bằng cách sử dụng hook `PostToolUse` gắn với các công cụ chỉnh sửa tệp (`Edit|Write`), hệ thống sẽ định dạng code một cách tự động và mang tính **chắc chắn 100% (deterministic guarantee)**, loại bỏ hoàn toàn các lỗi thiếu dấu phẩy hay sai khoảng cách thụt lề mà không phụ thuộc vào việc Claude có "nhớ" quy tắc hay không [637–641].
+
+*   **Lựa chọn 2 (Sai):** *Split the formatting rules into path-scoped .claude/rules/ files that load when Claude works on matching file types.*
+    *   **Phân tích:** Việc chuyển quy tắc vào tệp `.claude/rules/` giúp thu hẹp phạm vi nạp ngữ cảnh theo đường dẫn tệp (*path-scoped rules*) [662–664], nhưng bản chất của nó vẫn là hướng dẫn bằng văn bản tự nhiên (*prompt instructions*). Nó chỉ mang tính xác suất và đề bài đã chứng minh việc bổ sung chỉ dẫn không thể triệt tiêu hoàn toàn 15% lỗi còn lại [637–638].
+
+*   **Lựa chọn 3 (Sai):** *Add a Stop hook with a prompt-based check that evaluates whether generated code follows formatting standards and prompts Claude to fix violations.*
+    *   **Phân tích:** Sử dụng hook kiểm tra dựa trên prompt (*prompt-based check*) ở cuối luồng (`Stop hook`) sẽ bắt Claude phải tự đánh giá lại và sinh lại code. Cách này vừa tốn kém token/thời gian, vừa dựa vào sự tự đánh giá mang tính xác suất của LLM, không thể đảm bảo độ tin cậy tuyệt đối bằng việc chạy trực tiếp công cụ Prettier [637–638, 684–685].
+
+*   **Lựa chọn 4 (Sai):** *Extract the formatting rules into a dedicated skill that Claude loads automatically when generating code, with more detailed examples of correct formatting.*
+    *   **Phân tích:** Việc đưa quy tắc vào tệp `SKILL.md` kèm ví dụ chi tiết (Few-shot) rất tốt để định hình phong cách viết code [660–662, 674–676], nhưng nó vẫn thuộc nhóm hướng dẫn prompt (*prompt guidance*). Bất kỳ phương pháp prompt nào cũng không thể thay thế cho một hook lập trình cứng khi cần sự tuân thủ tuyệt đối [637–641].
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Deterministic Guarantee** | Bảo đảm mang tính định mệnh / Tuyệt đối | Sự đảm bảo chắc chắn 100% nhờ việc thực thi bằng code/hook thay vì dựa vào xác suất sinh văn bản của LLM [637–641]. |
+| **Probabilistic Compliance** | Tuân thủ mang tính xác suất | Mức độ tuân thủ dựa trên hướng dẫn prompt, luôn có tỷ lệ sai số hoặc bỏ sót nhỏ [637–638, 640–641]. |
+| **PostToolUse Hook** | Hook sau khi dùng công cụ | Lớp can thiệp kỹ thuật kích hoạt ngay sau khi một công cụ (như Edit/Write) thực thi xong [639–640]. |
+| **Tool Matcher (`Edit\|Write`)** | Bộ khớp công cụ | Cấu hình lọc để chỉ kích hoạt hook khi các công cụ chỉnh sửa tệp cụ thể được gọi [639–640]. |
+| **Path-Scoped Rules** | Quy tắc phân vùng theo đường dẫn | Các tệp quy tắc trong `.claude/rules/` chỉ nạp vào ngữ cảnh khi thao tác với đường dẫn khớp tệp [662–664]. |
+| **Programmatic Enforcement** | Thực thi bằng lập trình | Việc dùng mã nguồn, giao thức hoặc hooks để bắt buộc hệ thống tuân thủ quy tắc kinh doanh [637–639]. |
+
+
+## Practice Test 2 — Q102: Interview Pattern for Unfamiliar Caching Requirements
+
+**Đáp án đúng:**  
+**Ask Claude to interview you about the caching requirements before implementing, surfacing considerations like invalidation strategies, cache layers, consistency guarantees, and failure modes.** *(Yêu cầu Claude phỏng vấn bạn về các yêu cầu caching trước khi triển khai, làm nổi bật các cân nhắc như chiến lược xóa cache (invalidation), các lớp cache, bảo đảm tính nhất quán, và các chế độ thất bại (failure modes))*.
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này trích ra trực tiếp từ bài thi mẫu và chuẩn kiến thức **Claude Certified Architect – Foundations Exam Guide**:
+
+* **Phân vùng kiến thức chính (Primary Domain):** **Domain 3: Claude Code Configuration & Workflows** (Trọng số **20%**) [623–624].
+* **Task Statement:** **Task Statement 3.5: Apply iterative refinement techniques for progressive improvement** [666–668].
+* **Trích dẫn chuẩn từ tài liệu Exam Guide Blueprint:**
+  * *Kiến thức (Knowledge of):* 
+    > *"The interview pattern: having Claude ask questions to surface considerations the developer may not have anticipated before implementing"*.
+  * *Kỹ năng (Skills in):* 
+    > *"Using the interview pattern to surface design considerations (e.g., cache invalidation strategies, failure modes) before implementing solutions in unfamiliar domains"*.
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Nhận diện Mẫu thiết kế "Mô hình phỏng vấn" (The Interview Pattern):** Khi lập trình viên phải thực hiện một tác vụ trong một mảng công nghệ hoàn toàn mới hoặc chưa có nhiều kinh nghiệm thực chiến (*unfamiliar domain* — ví dụ: thiết kế caching cho môi trường production lần đầu), kỹ thuật tinh chỉnh hiệu quả nhất là yêu cầu Claude đóng vai trò người phỏng vấn (*interview pattern*).
+2. **Lợi ích của Interview Pattern:** Bằng cách để Claude đặt câu hỏi "phỏng vấn ngược" trước khi viết code, hệ thống giúp khơi gợi và làm lộ diện các biến số, rủi ro kiến trúc mà lập trình viên chưa lường trước được (ví dụ: *Chiến lược làm tươi cache khi sản phẩm thay đổi giá là gì? Xử lý thế nào khi cạn bộ nhớ Redis hoặc bị rớt kết nối?*).
+3. **Phân biệt với các kỹ thuật tinh chỉnh khác trong Domain 3:**
+   * Nếu bài toán thiếu ví dụ code cụ thể \\(\rightarrow\\) Dùng **Few-Shot / Concrete Examples** [667–668, 674–675].
+   * Nếu lập trình viên **mới làm mảng này lần đầu và chưa rõ các câu hỏi kiến trúc cần trả lời** \\(\rightarrow\\) Dùng **Interview Pattern**.
+   * Nếu bài toán cần phân tích cấu trúc phụ thuộc của nhiều tệp code cồng kềnh \\(\rightarrow\\) Dùng **Plan Mode** [664–666].
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng (Lựa chọn 4):** **Ask Claude to interview you about the caching requirements before implementing, surfacing considerations like invalidation strategies, cache layers, consistency guarantees, and failure modes.**
+  * *Phân tích:* Đây là thiết kế kiến trúc chuẩn xác tuyệt đối, khớp nguyên văn kịch bản được Anthropic mô tả trong Task Statement 3.5. Việc yêu cầu Claude phỏng vấn giúp chốt hạ toàn bộ các ràng buộc về tính nhất quán, làm tươi dữ liệu và xử lý sự cố trước khi bắt đầu sinh mã nguồn.
+
+* **Lựa chọn 1 (Sai):** *Write a specification with your known requirements and "TBD" markers for uncertain areas, having Claude propose solutions for each TBD as it implements.*
+  * *Phân tích:* Việc viết bản tả với các đánh dấu "TBD" (To Be Determined) rồi để Claude tự đề xuất trong lúc viết code sẽ khiến kiến trúc bị thay đổi lặt vặt liên tục, dễ dẫn đến các giả định thiết kế sai lệch so với nhu cầu thực tế của hệ thống.
+
+* **Lựa chọn 2 (Sai):** *Use plan mode to analyze the current /products endpoint implementation, then provide your caching requirements once Claude explains how the existing code is structured.*
+  * *Phân tích:* Plan mode giúp phân tích cấu trúc code hiện tại [664–666], nhưng ở kịch bản này vấn đề cốt lõi không phải là do lập trình viên không hiểu code của `/products`, mà là do họ **thiếu kinh nghiệm về các quy chuẩn kiến trúc của Production Caching** (như cache invalidation, consistency).
+
+* **Lựa chọn 3 (Sai):** *Start with a minimal request: "Add Redis caching to /products with 5-minute TTL." Add features and fix issues through follow-up prompts as problems surface during testing.*
+  * *Phân tích:* Đây là phương pháp thử-sai bị động (*trial-and-error*). Trong môi trường production caching, việc thiếu các cơ chế như xử lý rớt kết nối hay xóa cache khi dữ liệu thay đổi có thể gây ra sự cố nghiêm trọng (dữ liệu sai lệch, trôi thông tin) khi lên hệ thống thật mới phát hiện ra.
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Interview Pattern** | Mẫu thiết kế phỏng vấn | Kỹ thuật yêu cầu Claude đóng vai người phỏng vấn để đặt câu hỏi, giúp khơi gợi các yêu cầu/rủi ro chưa lường trước. |
+| **Unfamiliar Domain** | Lĩnh vực / Mảng công nghệ chưa quen thuộc | Tình huống lập trình viên thực hiện tác vụ ở mảng họ chưa có kinh nghiệm thực chiến (ví dụ: production caching). |
+| **Cache Invalidation Strategy** | Chiến lược xóa / Làm tươi bộ nhớ đệm | Cơ chế quyết định khi nào dữ liệu trong cache bị hủy hoặc cập nhật lại để tránh sai lệch dữ liệu. |
+| **Consistency Guarantees** | Cam kết tính nhất quán dữ liệu | Mức độ đảm bảo dữ liệu trong cache khớp 100% với dữ liệu gốc trong cơ sở dữ liệu. |
+| **Failure Modes / Fallback** | Chế độ xử lý sự cố / Dự phòng | Logic xử lý khi lớp caching bị sập (ví dụ: tự động truy vấn trực tiếp xuống DB gốc mà không làm ngắt ứng dụng). |
+| **Iterative Refinement** | Tinh chỉnh lặp lại | Chuỗi kỹ thuật cải thiện dần chất lượng output qua các bước kiểm thử, ví dụ mẫu hoặc phỏng vấn [666–668]. |
+
+---
+
+## Practice Test 2 — Q103: Concrete Input-Output Examples for Edge Cases
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này trích ra trực tiếp từ bài thi mẫu và chuẩn kiến thức **Claude Certified Architect – Foundations Exam Guide** [617–618]:
+
+* **Phân vùng kiến thức chính (Primary Domain):** **Domain 3: Claude Code Configuration & Workflows** (Trọng số **20%**) [623–624].
+* **Task Statement:** **Task Statement 3.5: Apply iterative refinement techniques for progressive improvement** [666–669].
+* **Trích dẫn chuẩn từ Exam Guide Blueprint:**
+  * *Kiến thức (Knowledge of):* 
+    > *"Concrete input/output examples as the most effective way to communicate expected transformations when prose descriptions are interpreted inconsistently"* [666–667].
+  * *Kỹ năng (Skills in):* 
+    > *"Providing specific test cases with example input and expected output to fix edge case handling (e.g., null values in migration scripts)"*.
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Kỹ thuật "Test Case với Dữ liệu Cụ thể" (Concrete Input/Output Examples):** Khi mô hình sinh mã nguồn gặp lỗi xử lý các trường hợp biên (*edge cases* như dữ liệu `null`, chuỗi rỗng, định dạng lạ), phương pháp tinh chỉnh lặp lại hiệu quả nhất là cung cấp một **test case cụ thể chứa dữ liệu mẫu đầu vào (example input)** và **kết quả đầu ra mong đợi (expected output)** [666–668].
+2. **Loại bỏ Diễn giải Văn bản Tự nhiên Mơ hồ (Prose Descriptions):** Việc mô tả lỗi bằng văn bản tự nhiên dài dòng thường khiến LLM diễn giải không nhất quán hoặc tiếp tục bỏ sót khi được yêu cầu sinh lại mã nguồn [666–667]. 
+3. **Tránh Bẫy "Tạo lại từ đầu" (Regenerate Everything):** Yêu cầu mô hình tạo lại toàn bộ script (*regenerate the entire script*) hay viết lại từ đầu (*complete rewrite*) khi chỉ gặp lỗi ở một trường hợp biên cụ thể là một phản mẫu gây lãng phí token, tăng độ trễ và dễ làm mất các phần logic đã chạy đúng trước đó [668–669].
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng (Lựa chọn 2):** **Provide a test case with example input containing null values and the expected output, then ask Claude to fix it.**
+  * **Phân tích:** Đây là thiết kế tinh chỉnh lặp lại tối ưu nhất theo nguyên văn hướng dẫn của Anthropic trong Task Statement 3.5. Bằng cách cung cấp một ví dụ dữ liệu `null` cụ thể cùng kết quả đầu ra chính xác, Claude sẽ nắm bắt ngay lập tức quy tắc xử lý trường hợp biên mà không phải đoán mò, giúp sửa lỗi nhanh chóng và chính xác [666–668].
+
+* **Lựa chọn 1 (Sai):** *Manually edit the generated code to fix the null handling, then continue working with Claude on other parts.*
+  * **Phân tích:** Việc tự sửa thủ công đoạn code bị lỗi triệt tiêu lợi ích tự động hóa của tác tử. Quan trọng hơn, nếu bạn tự sửa mà không phản hồi lại cho Claude, mô hình trong các lượt thoại tiếp theo sẽ không nhận biết được logic xử lý `null` mới, dẫn đến nguy cơ tái phát lỗi (*regressions*) khi làm việc ở các mô-đun khác [643–644, 668].
+
+* **Lựa chọn 3 (Sai):** *Describe the null value problem in detail and ask Claude to regenerate the entire script with improved edge case handling.*
+  * **Phân tích:** Mô tả bằng văn bản tự nhiên đơn thuần (*prose description*) thường bị LLM diễn giải thiếu nhất quán so với việc đưa ví dụ code/dữ liệu thực tế [666–667]. Đồng thời, yêu cầu tạo lại toàn bộ script (*regenerate the entire script*) gây lãng phí chi phí token không cần thiết [668–669].
+
+* **Lựa chọn 4 (Sai):** *Add "think harder about edge cases" to your prompt and request a complete rewrite of the migration logic.*
+  * **Phân tích:** Các câu lệnh giục mô hình suy nghĩ chung chung như "think harder" mang tính mơ hồ, không cung cấp thêm bất kỳ ngữ cảnh hay ràng buộc kỹ thuật rõ ràng nào [671–673]. Việc yêu cầu viết lại toàn bộ logic chuyển đổi dữ liệu (*complete rewrite*) vừa lãng phí tài nguyên vừa gây ra rủi ro sinh thêm lỗi mới [666–668].
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Edge Case Handling** | Xử lý trường hợp biên | Logic lập trình dùng để xử lý các tình huống dữ liệu đặc biệt/hiếm gặp (như `null`, `undefined`, chuỗi rỗng). |
+| **Input/Output Example** | Ví dụ đầu vào / đầu ra | Kỹ thuật đưa ra cặp dữ liệu mẫu và kết quả kỳ vọng để hướng dẫn mô hình tinh chỉnh code chính xác [666–668]. |
+| **Data Migration Script** | Kịch bản chuyển đổi dữ liệu | Đoạn mã dùng để di chuyển và chuẩn hóa dữ liệu giữa các cơ sở dữ liệu hoặc hệ thống lưu trữ. |
+| **Iterative Refinement** | Tinh chỉnh lặp lại | Chuỗi kỹ thuật cải thiện chất lượng output theo từng bước thông qua test case, sửa lỗi mục tiêu hoặc ví dụ mẫu [666–668]. |
+| **Prose Description** | Diễn giải bằng văn bản tự nhiên | Việc mô tả yêu cầu/lỗi bằng câu văn thông thường (kém hiệu quả hơn ví dụ cụ thể khi sửa lỗi biên) [666–667]. |
+
+---
+
+## Practice Test 2 — Q104: Parallel Subagent Calls in a Single Coordinator Response
+
+**Đáp án đúng:**  
+**Structure the coordinator to emit both Task tool calls (for web search and document analysis) in a single response message.** *(Cấu hình tác tử điều phối để phát ra cả hai cuộc gọi công cụ Task (cho tìm kiếm web và phân tích tài liệu) trong một tin nhắn phản hồi duy nhất)*.
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+*   **Phân vùng kiến thức chính (Primary Domain):** **Domain 1: Agentic Architecture & Orchestration** (Trọng số **27%**) [623–624].
+*   **Task Statement:** **Task Statement 1.3: Configure subagent invocation, context passing, and spawning** [635–637].
+*   **Trích dẫn chuẩn từ tài liệu Exam Guide Blueprint:**
+    *   *Kỹ năng trong Task Statement 1.3:*
+        > *"Spawning parallel subagents by emitting multiple Task tool calls in a single response message rather than across separate turns"*.
+    *   *Kỹ năng thực hành trong Exercise 4:*
+        > *"Implement parallel subagent execution by having the coordinator emit multiple Task tool calls in a single response. Measure the latency improvement compared to sequential execution"*.
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1.  **Cơ chế thực thi song song Subagent trong Claude Agent SDK:** Khi một tác tử điều phối (*coordinator*) cần gọi nhiều subagents độc lập với nhau (không phụ thuộc dữ liệu đầu ra của nhau), cơ chế chuẩn để chạy song song là bắt buộc mô hình phát ra (*emit*) nhiều cuộc gọi công cụ `Task` cùng lúc trong **một tin nhắn phản hồi duy nhất (single response message)**.
+2.  **Nhận diện nút thắt tuần tự (Sequential Bottleneck):** Nếu coordinator phát ra 1 tool call `Task` ở lượt 1, đợi kết quả, rồi mới phát ra tool call `Task` tiếp theo ở lượt 2, hệ thống đang bị chạy tuần tự qua nhiều lượt (*across separate turns*), làm tăng gấp đôi độ trễ (*latency*).
+3.  **Bác bỏ các giải pháp Over-Engineering và Prompting suông:**
+    *   Thêm lời giải thích về "lợi ích hiệu năng" trong system prompt không thể thay thế cho việc hướng dẫn cấu trúc emit tool calls.
+    *   Tự xây dựng một lớp bất đồng bộ phức tạp (*async orchestration layer*) bên ngoài agent để chạy nhiều thread là giải pháp làm cồng kềnh hạ tầng không cần thiết khi Agent SDK đã hỗ trợ sẵn việc này.
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+*   **Đáp án đúng (Lựa chọn 3):** **Structure the coordinator to emit both Task tool calls (for web search and document analysis) in a single response message.**
+    *   *Phân tích:* Đây là phương pháp thiết kế kiến trúc chuẩn xác nhất theo tài liệu của Anthropic. Bằng cách cấu hình coordinator để xuất ra cả hai cuộc gọi công cụ `Task` (`web search` và `document analysis`) trong cùng một tin nhắn phản hồi, SDK sẽ tự động kích hoạt thực thi hai subagents này song song, giảm thiểu tối đa tổng thời gian thực thi.
+
+*   **Lựa chọn 1 (Sai):** *Add detailed instructions to the coordinator's system prompt explaining the performance benefits of parallel execution at the same time.*
+    *   *Phân tích:* Diễn giải lý thuyết về "lợi ích hiệu năng" trong system prompt chỉ mang tính định hướng tổng quan. Nếu không hướng dẫn rõ ràng cấu trúc để mô hình phát ra nhiều cuộc gọi `Task` trong cùng 1 response, Claude vẫn sẽ duy trì thói quen gọi từng công cụ theo lượt tuần tự.
+
+*   **Lựa chọn 2 (Sai):** *Switch both subagents to use a Haiku-tier model instead of Sonnet to reduce their individual execution time.*
+    *   *Phân tích:* Chuyển sang mô hình Haiku có thể làm giảm thời gian phản hồi của từng subagent đơn lẻ, nhưng **hoàn toàn không giải quyết được nút thắt kiến trúc** là hai tác vụ bị thực thi nối tiếp nhau. Vấn đề cốt lõi ở đây là luồng thực thi tuần tự chứ không phải tốc độ xử lý của từng mô hình.
+
+*   **Lựa chọn 4 (Sai):** *Create an async orchestration layer outside the agent that spawns parallel threads, each running a separate coordinator.*
+    *   *Phân tích:* Đây là bẫy làm cồng kềnh hệ thống (*over-engineering*). Việc tạo thêm lớp đa luồng (*multi-threading*) chạy nhiều coordinator riêng biệt bên ngoài làm phá hỏng mô hình quản lý tập trung Hub-and-Spoke và làm mất khả năng tổng hợp kết quả của coordinator chính [632–634, 636].
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Parallel Subagent Spawning** | Khởi tạo subagent song song | Kỹ thuật kích hoạt nhiều subagents chạy đồng thời trong cùng một đợt gọi API. |
+| **Single Response Message** | Một tin nhắn phản hồi duy nhất | Một lượt thoại (turn) duy nhất mà trong đó Claude phát ra nhiều yêu cầu tool calls cùng lúc. |
+| **Task Tool** | Công cụ Task | Công cụ built-in trong Agent SDK được dùng để khởi tạo và giao việc cho subagent [635–636]. |
+| **Sequential Bottleneck** | Nút thắt thực thi tuần tự | Sự cố hiệu năng do chạy lần lượt từng subagent qua nhiều lượt thoại riêng biệt. |
+| **Independent Tasks** | Các tác vụ độc lập | Các công việc không đòi hỏi đầu ra của tác vụ này làm đầu vào cho tác vụ kia (điều kiện lý tưởng để chạy song song). |
+| **Coordinator Agent** | Tác tử điều phối | Tác tử trung tâm đảm nhận việc phân rã công việc, giao việc cho subagents và tổng hợp kết quả [632–634]. |
+
+
+## Practice Test 2 — Q105: Multi-Pass Review to Prevent Output Truncation
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này thuộc đề cương chính thức của kỳ thi **Claude Certified Architect – Foundations (CCA-f)** [617–618]:
+
+* **Phân vùng kiến thức chính (Primary Domains):**
+  * **Domain 1: Agentic Architecture & Orchestration** (Trọng số **27%**) [623–624].
+  * **Domain 4: Prompt Engineering & Structured Output** (Trọng số **20%**) [623–624].
+* **Task Statements liên quan:**
+  * **Task Statement 1.6:** Design task decomposition strategies for complex workflows [641–643].
+  * **Task Statement 4.6:** Design multi-instance and multi-pass review architectures [684–686].
+* **Trích dẫn chuẩn từ tài liệu Exam Guide Blueprint:**
+  * *Kiến thức trong Task Statement 1.6 & 4.6:*
+    > *"Prompt chaining patterns that break reviews into sequential steps (e.g., analyze each file individually, then run a cross-file integration pass)"* [641–642].
+    > *"Multi-pass review: splitting large reviews into per-file local analysis passes plus cross-file integration passes to avoid attention dilution..."* [684–685].
+  * *Câu hỏi mẫu tương tự (Sample Question 12):*
+    > *"Splitting reviews into focused passes directly addresses the root cause: attention dilution when processing many files at once. File-by-file analysis ensures consistent depth..."* [747–748].
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Nhận diện Sự cố Tràn token đầu ra (`max_tokens limit` truncation):** Khi chạy tác vụ review tự động trên một Pull Request lớn (30+ tệp) bằng **1 đợt gọi API duy nhất (*single-pass review*)**, lượng dữ liệu phản hồi trả về vượt quá giới hạn token đầu ra tối đa (`max_tokens`), khiến chuỗi JSON bị đứt đoạn giữa chừng và làm hỏng bộ phân tích (*parser*) của pipeline.
+2. **Quy tắc "Chia để trị" (Task Decomposition / Multi-pass Architecture):**
+   * Giải pháp triệt để và mang tính kiến trúc hệ thống duy nhất là **chia nhỏ PR thành nhiều đợt gọi API** (ví dụ: review theo từng tệp hoặc từng nhóm 3–5 tệp) [641–643, 685].
+   * Backend sẽ thu thập kết quả từ từng đợt gọi API nhỏ rồi hợp nhất các mảng phát hiện (`findings arrays`) lại với nhau trước khi trả kết quả cuối cùng [641–643, 747–748].
+3. **Bác bỏ các giải pháp tình thế / đối phó:**
+   * **Khống chế từ ngữ bằng Prompt:** Yêu cầu mô hình viết dưới 50 từ hay chỉ báo lỗi nặng vẫn có nguy cơ vượt trần `max_tokens` khi gặp PR có quá nhiều lỗi.
+   * **Bỏ `tool_use` sang Markdown:** Làm mất đi khả năng định dạng đầu ra có cấu trúc chuẩn (*structured output*) của `tool_use`, khiến code backend càng khó phân tích dữ liệu tự động [676–678].
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng:** **Split the review into multiple API calls that each analyze a subset of the changed files, then merge the resulting findings arrays.**
+  * *Phân tích:* Đây là giải pháp kiến trúc tối ưu nhất được Anthropic khuyến nghị [641–643, 685, 747–748]. Việc phân rã PR 30+ tệp thành nhiều đợt gọi API xử lý các tập hợp tệp nhỏ hơn (*subset of files*) giúp kiểm soát tuyệt đối dung lượng token đầu ra không vượt quá `max_tokens`, bảo đảm chuỗi JSON luôn hoàn chỉnh không bị cắt đứt. Đồng thời, phương pháp này còn giúp nâng cao chất lượng review nhờ tránh được hiện tượng phân tán sự chú ý (*attention dilution*).
+
+* **Lựa chọn 1 (Sai):** *Add retry logic that detects truncated JSON and re-sends the request with instructions to report only critical and high severity findings.*
+  * *Phân tích:* Đây là cách xử lý mang tính đối phó. Việc yêu cầu Claude chỉ báo lỗi nghiêm trọng không bảo đảm chuỗi JSON sẽ đủ ngắn khi gặp các PR cực kỳ lớn, đồng thời làm bỏ sót các lỗi tiềm ẩn ở mức độ trung bình và nhỏ trong codebase.
+
+* **Lựa chọn 2 (Sai):** *Increase max_tokens to the model's maximum and instruct Claude to keep finding descriptions under 50 words each.*
+  * *Phân tích:* Dù có tăng `max_tokens` lên mức tối đa của mô hình, nếu tổng số lượng lỗi phát hiện trên 30+ tệp vượt quá trần output, phản hồi vẫn sẽ bị đứt đoạn. Bên cạnh đó, các hướng dẫn khống chế số từ bằng prompt tự nhiên (*under 50 words*) chỉ mang tính xác suất (*probabilistic*) và không bảo đảm tuân thủ 100% [637–638, 666–667].
+
+* **Lựa chọn 4 (Sai):** *Switch from tool_use to prompting Claude to return findings as a markdown list.*
+  * *Phân tích:* Mất đi tính năng `tool_use` đồng nghĩa với việc mất đi sự bảo đảm về đầu ra có cấu trúc chuẩn (*JSON Schema enforcement*) [676–678]. Bảng danh sách Markdown vẫn có thể bị cắt ngang do tràn `max_tokens`, đồng thời khiến việc phân tích cú pháp tự động trên pipeline CI/CD trở nên thiếu tin cậy.
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Output Truncation** | Cắt ngang đầu ra | Hiện tượng văn bản/JSON trả về bị đứt đoạn giữa chừng do chạm trần `max_tokens`. |
+| **Single-Pass Review** | Review đơn lượt | Việc nạp toàn bộ danh sách tệp thay đổi vào 1 đợt gọi API duy nhất (dễ gây tràn token và suy giảm chất lượng review) [746–748]. |
+| **Multi-Pass Review** | Review đa lượt | Kỹ thuật chia nhỏ tác vụ review thành nhiều lượt gọi API cho từng nhóm tệp nhỏ rồi tổng hợp kết quả [641–643, 685]. |
+| **Task Decomposition** | Phân rã tác vụ | Phương pháp chia một công việc lớn thành các sub-task nhỏ hơn để tránh quá tải ngữ cảnh/token [641–643]. |
+| **Attention Dilution** | Phân tán sự chú ý | Hiện tượng mô hình giảm độ sâu và độ chính xác khi phải xử lý quá nhiều tệp/thông tin cùng lúc trong prompt. |
+| **Structured Output Enforcement** | Bắt buộc đầu ra có cấu trúc | Kỹ thuật dùng `tool_use` và JSON Schema để đảm bảo dữ liệu trả về đúng định dạng máy có thể đọc được [676–678]. |
+
+---
+
+## Practice Test 2 — Q106: Grep Distinctive Error Text Before Reading Files
+**Đáp án đúng:**  
+**Use Grep to search for distinctive text from the error message (like "SYNC_CONFLICT" or "entity version mismatch"), then Read the matching files to understand context.** *(Sử dụng Grep để tìm kiếm chuỗi văn bản đặc trưng từ thông báo lỗi (như "SYNC_CONFLICT" hoặc "entity version mismatch"), sau đó dùng Read để đọc các tệp khớp kết quả nhằm hiểu ngữ cảnh)*.
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này thuộc đề cương chính thức của kỳ thi **Claude Certified Architect – Foundations (CCA-f)** [617–618]:
+
+* **Phân vùng kiến thức chính (Primary Domain):** **Domain 2: Tool Design & MCP Integration** (Trọng số **18%**) kết hợp với **Domain 3: Claude Code Configuration & Workflows** (Trọng số **20%**) [623–624].
+* **Task Statement:** **Task Statement 2.5: Select and apply built-in tools (Read, Write, Edit, Bash, Grep, Glob) effectively** [655–657].
+* **Trích dẫn chuẩn từ tài liệu Exam Guide Blueprint:**
+  * *Kiến thức trong Task Statement 2.5:*
+    > *"Grep for content search (searching file contents for patterns like function names, error messages, or import statements)"* [655–656].
+    > *"Glob for file path pattern matching (finding files by name or extension patterns)"* [655–656].
+  * *Kỹ năng trong Task Statement 2.5:*
+    > *"Selecting Grep for searching code content across a codebase (e.g., finding all callers of a function, locating error messages)"* [656–657].
+    > *"Building codebase understanding incrementally: starting with Grep to find entry points, then using Read to follow imports and trace flows, rather than reading all files upfront"* [656–657].
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Phân biệt triệt để giữa `Grep` và `Glob`:**
+   * **`Grep` (Content Search):** Dùng để tìm kiếm **nội dung bên trong tệp** (chuỗi văn bản, từ khóa, tên hàm, thông báo lỗi, câu lệnh import) [655–657].
+   * **`Glob` (Path Search):** Chỉ dùng để tìm kiếm **tên tệp hoặc cấu trúc đường dẫn** theo định dạng mẫu (ví dụ: `**/*.test.ts`, `src/errors/*`) [655–657].
+2. **Nguyên tắc Khám phá Tăng tiến (Incremental Exploration):** Bắt đầu bằng `Grep` để tìm chính xác điểm xuất hiện của chuỗi văn bản độc nhất, sau đó mới dùng `Read` mở đúng tệp chứa kết quả đó [656–657].
+3. **Quy tắc bác bỏ các giải pháp lãng phí Token:**
+   * **Không đọc tài liệu/tệp tràn lan ngay từ đầu:** Đọc README hoặc duyệt từng tệp nguồn trong 12 dịch vụ (`Read` thủ công) sẽ làm cạn kiệt cửa sổ ngữ cảnh (*context exhaustion*) và tốn thời gian không cần thiết [656–657].
+   * **Truy vấn phải đủ hẹp (*Targeted Search*):** Tìm kiếm chuỗi văn bản đặc trưng (`SYNC_CONFLICT`) tốt hơn nhiều so với việc tìm tất cả các tệp import module xử lý lỗi chung chung.
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng (Lựa chọn 3):** **Use Grep to search for distinctive text from the error message (like "SYNC_CONFLICT" or "entity version mismatch"), then Read the matching files to understand context.**
+  * *Phân tích:* Đây là chiến lược khám phá codebase chuẩn xác nhất theo tài liệu Anthropic [655–657]. Bằng cách dùng `Grep` quét chuỗi văn bản độc nhất `"SYNC_CONFLICT"`, hệ thống sẽ định vị chính xác vị trí tệp và dòng code tạo ra lỗi trong 12 dịch vụ chỉ sau 1 lần tìm kiếm, sau đó mới dùng `Read` đọc đúng tệp đó để hiểu ngữ cảnh [656–657].
+
+* **Lựa chọn 1 (Sai):** *Read the project's README and service configuration files to understand the architecture, then systematically Read source files in service directory.*
+  * *Phân tích:* Đây là phản mẫu (*anti-pattern*) trong việc khám phá codebase. Đọc thủ công README và các tệp mã nguồn thuộc 12 dịch vụ sẽ ngốn hàng trăm ngàn token, gây phân tán sự chú ý (*Attention Dilution*) và tốn chi phí API rất lớn khi đã có sẵn từ khóa tìm kiếm [656–657, 688–689].
+
+* **Lựa chọn 2 (Sai):** *Use Glob to find files in directories commonly associated with error handling (such as errors/, exceptions/, or handlers/) across services, then Read each matching file.*
+  * *Phân tích:* Lựa chọn này vi phạm nguyên tắc sử dụng công cụ: `Glob` chỉ tìm theo cấu trúc tên đường dẫn chứ không đọc được nội dung tệp [655–656]. Ngoài ra, chuỗi lỗi `"SYNC_CONFLICT"` có thể được khai báo trực tiếp trong một file logic nghiệp vụ (như `order_service.py`) chứ không nhất thiết nằm trong thư mục `errors/`, dẫn đến việc `Glob` bỏ sót kết quả [655–657].
+
+* **Lựa chọn 4 (Sai):** *Use Grep to find all files that import the project's error handling module, then Read those files to locate custom error definitions.*
+  * *Phân tích:* Mặc dù `Grep` đã được sử dụng đúng công cụ, nhưng **mức độ thu hẹp truy vấn quá kém**. Hầu hết mọi tệp trong 12 dịch vụ đều import module xử lý lỗi, dẫn đến việc `Grep` trả về hàng trăm tệp và bắt Claude phải dùng `Read` từng tệp một cách không cần thiết, làm mất đi lợi thế của chuỗi từ khóa độc nhất `"SYNC_CONFLICT"`.
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **`Grep` Tool** | Công cụ Grep | Công cụ tìm kiếm chuỗi ký tự/từ khóa bên trong nội dung tệp thuộc codebase [655–657]. |
+| **`Glob` Tool** | Công cụ Glob | Công cụ tìm kiếm tên tệp hoặc đường dẫn tệp theo mẫu wildcard (như `**/*.py`) [655–657]. |
+| **Incremental Exploration** | Khám phá tăng tiến | Phương pháp tìm kiếm codebase theo từng bước (Grep \\(\rightarrow\\) Read) thay vì nạp tràn lan ngay từ đầu [656–657]. |
+| **Distinctive Text / String Literal** | Chuỗi văn bản đặc trưng / Chuỗi nguyên bản | Từ khóa hoặc thông báo lỗi duy nhất giúp thu hẹp kết quả tìm kiếm xuống mức tối đa. |
+| **Codebase Entry Point** | Điểm đầu vào mã nguồn | Vị trí khởi đầu của một luồng logic hoặc hàm/chuỗi lỗi cần truy vết trong dự án [656–657]. |
+| **Targeted Query** | Truy vấn có mục tiêu | Câu lệnh tìm kiếm có phạm vi hẹp để tránh làm phình to ngữ cảnh và lãng phí token [656–657]. |
+
+
+## Practice Test 2 — Q107: Adaptive Test Planning for a Large Legacy Codebase
+
+**Đáp án đúng:**  
+**Use Glob and Grep to map codebase structure, identify heavily-coupled modules, create a prioritized plan for high-impact areas, and revise as dependencies are discovered.** *(Sử dụng Glob và Grep để lập bản đồ cấu trúc codebase, xác định các module có độ phụ thuộc cao, tạo kế hoạch ưu tiên cho các vùng có ảnh hưởng lớn và điều chỉnh linh hoạt khi phát hiện ra các phụ thuộc mới)* [642–643, 655–657].
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này nằm trong đề cương chính thức của kỳ thi **Claude Certified Architect – Foundations (CCA-f)** [617–618]:
+
+* **Phân vùng kiến thức chính (Primary Domains):** 
+  * **Domain 1: Agentic Architecture & Orchestration** (Trọng số **27%**) [623–624].
+  * **Domain 2: Tool Design & MCP Integration** (Trọng số **18%**) [623–624].
+* **Task Statements liên quan:**
+  * **Task Statement 1.6: Design task decomposition strategies for complex workflows** [641–643].
+  * **Task Statement 2.5: Select and apply built-in tools (Read, Write, Edit, Bash, Grep, Glob) effectively** [655–657].
+* **Trích dẫn chuẩn nguyên văn từ Exam Guide Blueprint:**
+  * *Kỹ năng trong Task Statement 1.6:*
+    > *"Decomposing open-ended tasks (e.g., 'add comprehensive tests to a legacy codebase') by first mapping structure, identifying high-impact areas, then creating a prioritized plan that adapts as dependencies are discovered"* [642–643].
+  * *Kỹ năng trong Task Statement 2.5:*
+    > *"Building codebase understanding incrementally: starting with Grep to find entry points, then using Read to follow imports and trace flows, rather than reading all files upfront"* [656–657].
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Nhận diện dạng bài "Phân rã tác vụ mở trên codebase lớn" (Open-ended Task on Large Codebase):** Khi đối mặt với yêu cầu mở rộng (như *"bổ sung test toàn diện cho codebase 200 tệp chưa có test"*), tác tử không bao giờ được cố gắng đọc tất cả các tệp cùng một lúc hay áp dụng lịch trình cố định cứng nhắc [641–643, 656–657].
+2. **Quy tắc 3 bước xử lý tác vụ mở:**
+   * **Bước 1 (Lập bản đồ nhẹ token):** Dùng `Glob` (tìm cấu trúc thư mục/tệp) và `Grep` (tìm từ khóa/liên kết) để xây dựng bản đồ tổng quan codebase mà không làm phình ngữ cảnh [642–643, 655–657].
+   * **Bước 2 (Xác định vùng ảnh hưởng cao):** Định vị các module cồng kềnh, có độ kết nối/phụ thuộc cao (*heavily-coupled modules / high-impact areas*) để đưa vào danh sách ưu tiên viết test trước [642–643].
+   * **Bước 3 (Thích ứng linh hoạt):** Tạo kế hoạch ban đầu và cho phép điều chỉnh (*revise*) khi phát hiện thêm các dependency mới trong quá trình thực thi [642–643].
+3. **Bác bỏ các cạm bẫy thiết kế (Anti-Patterns):**
+   * **Cạn kiệt ngữ cảnh (Context Exhaustion):** Đọc lần lượt toàn bộ 200 tệp (`Read all 200 files`) trước khi viết code là phản mẫu gây tràn token ngữ cảnh [656–657, 688–689].
+   * **Lập lịch cứng nhắc (Fixed Schedule):** Phân bổ nguồn lực đều nhau cho mọi thư mục mà không quan tâm đến độ phức tạp hay tầm quan trọng nghiệp vụ là cách làm kém hiệu quả.
+   * **Thực thi ngẫu nhiên (Alphabetical Approach):** Viết test theo thứ tự bảng chữ cái hoàn toàn bỏ qua thứ tự ưu tiên của các module cốt lõi [642–643].
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng:** **Use Glob and Grep to map codebase structure, identify heavily-coupled modules, create a prioritized plan for high-impact areas, and revise as dependencies are discovered.**
+  * *Phân tích:* Khớp 100% với hướng dẫn chuẩn trong Task Statement 1.6 và 2.5 của Anthropic [642–643, 655–657]. Sử dụng `Glob` và `Grep` giúp tác tử nhanh chóng nắm bắt cấu trúc dự án 200 tệp một cách tiết kiệm token tối đa, định vị chính xác các module quan trọng có độ phụ thuộc cao để ưu tiên viết test trước, đồng thời giữ cho kế hoạch có tính linh hoạt điều chỉnh khi phát hiện thêm liên kết mới [642–643, 656–657].
+
+* **Lựa chọn 1 (Sai):** *Create a fixed testing schedule upfront based on directory structure, allocating equal effort to each top-level directory regardless of code complexity or business importance.*
+  * *Phân tích:* Việc lập lịch cố định (*fixed schedule*) và chia đều công sức cho mọi thư mục cấp cao mà không xem xét độ phức tạp hay tầm quan trọng nghiệp vụ là một phản mẫu. Cách làm này khiến tác tử lãng phí thời gian vào các thư mục phụ ít quan trọng [641–643].
+
+* **Lựa chọn 3 (Sai):** *Systematically read all 200 files to create a complete function inventory before writing any tests, ensuring the testing plan accounts for every function before beginning.*
+  * *Phân tích:* Đọc thủ công toàn bộ 200 tệp bằng công cụ `Read` để kiểm kê từng hàm trước khi viết test sẽ dẫn đến sự cố tràn cửa sổ ngữ cảnh (*context window exhaustion*) và ngốn hàng trăm ngàn token không cần thiết [656–657, 688–689]. Chiến lược đúng đắn là khám phá tăng tiến bằng `Glob`/`Grep` [656–657].
+
+* **Lựa chọn 4 (Sai):** *Start writing tests for the first module alphabetically, using test failures and imports to discover related files organically.*
+  * *Phân tích:* Viết test theo thứ tự bảng chữ cái (*alphabetically*) là phương pháp ngẫu nhiên, không có chiến lược. Cách này khiến tác tử bị cuốn vào viết test cho các module không quan trọng chỉ vì tên của nó bắt đầu bằng chữ "A", thay vì tập trung vào các khu vực cốt lõi có rủi ro cao của hệ thống [642–643].
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Open-Ended Task Decomposition** | Phân rã tác vụ mở | Chiến lược chia nhỏ một công việc rộng, chưa rõ điểm dừng thành các bước định vị, ưu tiên và thực thi linh hoạt [641–643]. |
+| **Heavily-Coupled Modules** | Các module có độ phụ thuộc cao | Các module có nhiều liên kết, được gọi bởi nhiều thành phần khác trong hệ thống (cần ưu tiên viết test) [642–643]. |
+| **High-Impact Areas** | Các vùng có ảnh hưởng lớn | Những đoạn mã nguồn đóng vai trò cốt lõi hoặc chứa nhiều logic nghiệp vụ quan trọng trong codebase [642–643]. |
+| **Adaptive Prioritized Plan** | Kế hoạch ưu tiên có tính thích ứng | Kế hoạch thực thi được xếp theo độ ưu tiên và có khả năng tự điều chỉnh khi phát hiện thêm thông tin mới [642–643]. |
+| **Incremental Codebase Mapping** | Lập bản đồ mã nguồn tăng tiến | Kỹ thuật tìm kiếm cấu trúc code theo từng bước dùng `Glob`/`Grep` trước rồi mới `Read` từng tệp cụ thể [656–657]. |
+| **Context Window Exhaustion** | Cạn kiệt cửa sổ ngữ cảnh | Hiện tượng nạp quá nhiều tệp code thô làm tràn token ngữ cảnh của mô hình [656–657, 688–689]. |
+
+---
+
+## Practice Test 2 — Q108: MCP Resources for Cross-System Content Catalogs
+
+**Đáp án đúng:**  
+**Expose each server's content catalog as MCP resources—issue summaries, documentation hierarchy, database schemas** *(Công khai danh mục nội dung của từng server dưới dạng MCP resources — tóm tắt issue, hệ thống phân cấp tài liệu, sơ đồ cơ sở dữ liệu)*.
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này nằm trong đề cương chính thức của kỳ thi **Claude Certified Architect – Foundations (CCA-f)** [617–618]:
+
+* **Phân vùng kiến thức chính (Primary Domain):** **Domain 2: Tool Design & MCP Integration** (Trọng số **18%**) [623–624].
+* **Task Statement:** **Task Statement 2.4: Integrate MCP servers into Claude Code and agent workflows** [653–655].
+* **Trích dẫn chuẩn từ tài liệu Exam Guide Blueprint:**
+  * *Kiến thức trong Task Statement 2.4:*
+    > *"MCP resources as a mechanism for exposing content catalogs (e.g., issue summaries, documentation hierarchies, database schemas) to reduce exploratory tool calls"* [653–654].
+  * *Kỹ năng trong Task Statement 2.4:*
+    > *"Exposing content catalogs as MCP resources to give agents visibility into available data without requiring exploratory tool calls"*.
+  * *Chủ đề thuộc phạm vi thi (In-Scope Topics):*
+    > *"MCP tool and resource design: resources for content catalogs, tools for actions..."*.
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Phân biệt cốt lõi giữa MCP Tools và MCP Resources:**
+   * **MCP Tools:** Dùng cho các **hành động/thao tác** (*actions/side-effects*) hoặc các truy vấn linh hoạt theo tham số.
+   * **MCP Resources:** Dùng để cung cấp các **danh mục nội dung/dữ liệu tĩnh hoặc có cấu trúc** (*content catalogs / data views*) như danh sách tóm tắt issue, sơ đồ CSDL, cấu trúc wiki để tác tử có tầm nhìn (*visibility*) ngay từ đầu [653–655, 766].
+2. **Nhận diện bài toán "Lãng phí cuộc gọi do khám phá mù" (Exploratory Tool Call Waste):**
+   * Khi tác tử phải gọi 8–10 tool liên tiếp chỉ để "ngó nghiêng" xem server có chứa thông tin gì (ví dụ gọi `search_issues`, `run_query` chỉ để dò tên bảng hoặc tên issue), nó sẽ làm ngốn token và tràn context window [653–654, 687].
+   * Giải pháp chuẩn của Anthropic là **Expose Content Catalog dưới dạng MCP Resources** giúp LLM "thấy" sẵn bản đồ dữ liệu mà không cần chạy tool khám phá [653–655].
+3. **Quy tắc bác bỏ các cạm bẫy thiết kế:**
+   * **Gộp Server (Unified Server):** Phá hỏng tính đóng gói module của kiến trúc MCP.
+   * **Tool chuẩn bị (`prepare_investigation` tool):** Vẫn bắt LLM gọi Tool (mang tính hành động) thay vì tận dụng cơ chế đọc Resource có sẵn trong chuẩn MCP.
+   * **Orchestrator định tuyến từ khóa:** Không giải quyết được các câu hỏi liên hệ thống (*cross-system questions*) yêu cầu thông tin từ cả 3 server cùng lúc.
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng:** **Expose each server's content catalog as MCP resources—issue summaries, documentation hierarchy, database schemas**
+  * *Phân tích:* Khớp 100% với kiến trúc chuẩn của Anthropic [653–655, 766]. Việc expose danh mục dưới dạng MCP Resources cung cấp bức tranh toàn cảnh (*content catalog*) của từng server cho tác tử trước khi thực hiện hành động. Nhờ đó, tác tử không cần thực hiện các cuộc gọi khám phá thử-sai (*exploratory tool calls*), giúp giảm từ 8–10 cuộc gọi xuống các cuộc gọi chính xác, tiết kiệm token và tránh tràn cửa sổ ngữ cảnh [653–655, 687].
+
+* **Lựa chọn 1 (Sai):** *Consolidate all three servers into a unified MCP server with cross-referencing capabilities*
+  * *Phân tích:* Việc gộp 3 server độc lập (issue tracker, documentation wiki, database explorer) thành 1 server duy nhất vi phạm nguyên tắc thiết kế phân rã module của MCP [653–654]. Ngoài ra, việc gộp server không giải quyết được gốc rễ vấn đề: LLM vẫn thiếu tầm nhìn về danh mục dữ liệu và vẫn phải thực hiện các cuộc gọi dò tìm nếu dữ liệu không được biểu diễn thành Resources [653–655].
+
+* **Lựa chọn 3 (Sai):** *Add a prepare_investigation tool to each server that accepts a natural language question and returns relevant content summaries*
+  * *Phân tích:* Thêm một tool mới vẫn buộc tác tử phải thực thi cuộc gọi tool (*tool call*) để lấy thông tin tổng quan. Cách làm này không tận dụng đúng tính năng cốt lõi của MCP Protocol là tách biệt giữa **Tools (Hành động)** và **Resources (Dữ liệu/Danh mục đọc trực tiếp)** [653–655, 766].
+
+* **Lựa chọn 4 (Sai):** *Add an orchestrator that routes questions to a single server based on keywords*
+  * *Phân tích:* Đề bài đặt ra kịch bản là câu hỏi liên hệ thống (*cross-system questions*) như *"Bảng CSDL nào bị ảnh hưởng bởi đợt refactor authentication trong PROJ-1234?"*. Câu hỏi này đòi hỏi truy cập đồng thời cả Issue Tracker (PROJ-1234) và Database Explorer (bảng CSDL). Định tuyến câu hỏi sang duy nhất **1 server** dựa trên từ khóa sẽ làm hệ thống không thể trả lời các câu hỏi liên kết đa hệ thống.
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **MCP Resources** | Tài nguyên MCP | Cơ chế của chuẩn MCP dùng để khai báo/đọc danh mục dữ liệu, sơ đồ, tài liệu mà không tạo ra side-effect [653–655, 766]. |
+| **MCP Tools** | Công cụ MCP | Các hàm/thao tác thực thi có khả năng thay đổi trạng thái hoặc thực hiện truy vấn linh hoạt theo tham số [653–655, 766]. |
+| **Content Catalog** | Danh mục nội dung | Tập hợp thông tin tổng quan (sơ đồ CSDL, danh mục wiki, tóm tắt issue) giúp tác tử hiểu cấu trúc dữ liệu khả dụng [653–655]. |
+| **Exploratory Tool Calls** | Cuộc gọi công cụ khám phá | Các lần gọi tool mang tính dò tìm, thử-sai do tác tử thiếu thông tin về dữ liệu hiện có trong hệ thống [653–655]. |
+| **Cross-System Questions** | Câu hỏi liên hệ thống | Loại truy vấn phức tạp đòi hỏi thông tin tổng hợp từ nhiều server/dịch vụ khác nhau cùng lúc. |
+| **Unified MCP Server** | Server MCP hợp nhất | Phản mẫu thiết kế gom tất cả dịch vụ vào 1 server thay vì giữ cấu trúc MCP độc lập theo miền [653–654]. |
+
+---
+## Practice Test 2 — Q109: Coordinator Feedback Loops for Research Coverage Gaps
+
+**Đáp án đúng:**  
+**Have the coordinator evaluate synthesis output for gaps, then re-delegate to web search and document analysis with targeted queries before Invoking synthesis again.** *(Cho phép tác tử điều phối đánh giá đầu ra của tác tử tổng hợp để tìm khoảng trống thông tin, sau đó giao việc lại cho các tác tử tìm kiếm web và phân tích tài liệu bằng các truy vấn có mục tiêu trước khi gọi lại bước tổng hợp)*.
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này trích từ bộ kịch bản **Scenario 3: Multi-Agent Research System** trong đề cương chính thức của kỳ thi **Claude Certified Architect – Foundations (CCA-f)** [626–627]:
+
+*   **Phân vùng kiến thức chính (Primary Domain):** **Domain 1: Agentic Architecture & Orchestration** (Trọng số **27%**) [623, 626–627].
+*   **Task Statement:** **Task Statement 1.2: Orchestrate multi-agent systems with coordinator-subagent patterns** [632–635].
+*   **Trích dẫn chuẩn từ Exam Guide Blueprint:**
+    *   *Kỹ năng chính trong Task Statement 1.2:*
+        > *"Implementing iterative refinement loops where the coordinator evaluates synthesis output for gaps, re-delegates to search and analysis subagents with targeted queries, and re-invokes synthesis until coverage is sufficient"*.
+    *   *Mô tả thực hành liên quan (Exercise 4):*
+        > *"Design and Debug a Multi-Agent Research Pipeline... practice orchestrating subagents, managing context passing, and handling synthesis with coverage gaps"* [714–716].
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1.  **Nhận diện Mẫu kiến trúc "Vòng lặp tinh chỉnh lặp lại" (Iterative Refinement Loop):** Khi một tác tử tổng hợp (*synthesis agent*) phát hiện các câu hỏi nghiên cứu chưa được trả lời, cách xử lý chuẩn của hệ thống đa tác tử (*multi-agent architecture*) là quay lại tác tử điều phối (*coordinator*) để thực hiện vòng lặp tinh chỉnh lặp lại.
+2.  **Nguyên tắc Mô hình Hub-and-Spoke (Hub-and-Spoke Architecture):**
+    *   Tác tử điều phối (*coordinator*) đóng vai trò là "Hub" trung tâm nắm toàn bộ luồng điều khiển, đánh giá khoảng trống thông tin (*coverage gaps*) và phân rã các truy vấn có mục tiêu (*targeted queries*) [632–634].
+    *   Các subagent ("Spokes") như `web search` hay `document analysis` chỉ thực hiện công việc được giao và không trực tiếp trao đổi ngữ cảnh với nhau hay tự ý "vượt cấp" [632–634, 651].
+3.  **Quy tắc bác bỏ các cạm bẫy thiết kế:**
+    *   **Vi phạm phân quyền công cụ (Scope/Tool Misuse):** Cấp trực tiếp công cụ tìm kiếm web cho tác tử tổng hợp là vi phạm nguyên tắc "phân quyền công cụ theo chuyên môn" (*scoped tool access*), khiến tác tử tổng hợp dễ sử dụng sai công cụ.
+    *   **Giải pháp thụ động (Passive Limitation):** Ghi chú sự thiếu hụt thông tin vào báo cáo cuối cùng không giúp cải thiện độ hoàn thiện của nghiên cứu.
+    *   **Mở rộng tìm kiếm tĩnh ban đầu (Static Broad Search):** Tăng độ rộng truy vấn ngay từ đầu gây lãng phí token và vẫn không thể đảm bảo bao phủ được các khía cạnh ẩn chỉ phát hiện được sau khi đã tổng hợp dữ liệu [634, 641–642].
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+*   **Đáp án đúng (Lựa chọn 1):** **Have the coordinator evaluate synthesis output for gaps, then re-delegate to web search and document analysis with targeted queries before Invoking synthesis again.**
+    *   *Phân tích:* Khớp 100% với kỹ năng được yêu cầu trong Task Statement 1.2. Tác tử điều phối nhận tín hiệu báo thiếu hụt từ tác tử tổng hợp, phân tích các khoảng trống, đặt ra các câu hỏi/truy vấn tìm kiếm tập trung (*targeted queries*), giao lại việc cho các subagent thu thập dữ liệu, sau đó mới tổng hợp lại để xuất báo cáo hoàn chỉnh.
+
+*   **Lựa chọn 2 (Sai):** *Give the synthesis agent direct access to web search tools so it can autonomously fill knowledge gaps without returning control to the coordinator.*
+    *   *Phân tích:* Vi phạm nguyên tắc thiết kế mô hình Hub-and-Spoke và phân quyền công cụ (*Task Statement 2.3*) [632–633, 650–651]. Trao công cụ `web search` trực tiếp cho tác tử tổng hợp khiến nó hoạt động chồng chéo vai trò, làm mất khả năng quan sát (*observability*) và kiểm soát luồng của tác tử điều phối.
+
+*   **Lựa chọn 3 (Sai):** *Have the report generation agent note which research questions couldn't be answered, so users understand the limitations of the final output.*
+    *   *Phân tích:* Đây là giải pháp ghi nhận sự cố thụ động (*passive workaround*). Mặc dù việc minh bạch giới hạn báo cáo là một thực hành tốt khi cạn kiệt nguồn tra cứu, nhưng nó không giải quyết được mục tiêu chính của đề bài là **"cải thiện độ hoàn thiện của nghiên cứu"** (*improve research completeness*).
+
+*   **Lựa chọn 4 (Sai):** *Increase the initial breadth of queries sent to web search and document analysis to reduce the probability of missing relevant information.*
+    *   *Phân tích:* Mở rộng truy vấn ngay từ đợt đầu là phương pháp nạp dữ liệu tĩnh không tối ưu. Nó gây bùng nổ số lượng token, phân tán sự chú ý (*attention dilution*) và tốn chi phí API, nhưng vẫn có xác suất cao bỏ sót các góc khuất chuyên sâu mà chỉ có thể phát hiện sau khi hoàn thành lượt tổng hợp ban đầu [634, 641–642, 688].
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Iterative Refinement Loop** | Vòng lặp tinh chỉnh lặp lại | Luồng xử lý trong đó coordinator đánh giá kết quả tổng hợp, phát hiện khoảng trống và giao việc tìm kiếm bổ sung trước khi tạo báo cáo cuối cùng. |
+| **Coverage Gaps** | Khoảng trống bao phủ thông tin | Các câu hỏi hoặc chủ đề phụ chưa được trả lời đầy đủ do thiếu dữ liệu từ các bước tìm kiếm trước. |
+| **Targeted Queries** | Truy vấn có mục tiêu | Các câu lệnh tìm kiếm/truy vấn được thu hẹp phạm vi chính xác vào những phần thông tin còn thiếu. |
+| **Hub-and-Spoke Architecture** | Kiến trúc Trục và Nan hoa | Mô hình quản lý tập trung trong đó một tác tử điều phối (Hub) quản lý toàn bộ tương tác giữa các tác tử phụ (Spokes) [632–634]. |
+| **Scoped Tool Access** | Phân quyền công cụ theo phạm vi | Việc giới hạn danh sách công cụ cấp cho từng tác tử đúng với chức năng chuyên môn của nó [650–651]. |
+| **Synthesis Agent** | Tác tử tổng hợp | Tác tử chuyên trách việc gom nhóm, đối chiếu và hợp nhất các phát hiện từ nhiều nguồn dữ liệu khác nhau [633–635]. |
+
+---
+
+## Practice Test 2 — Q110: Structured Document IDs for Reliable Tool Chaining
+
+**Đáp án đúng:**  
+**Structured data containing document IDs and metadata for each result.** *(Dữ liệu có cấu trúc chứa mã định danh tệp (document IDs) và siêu dữ liệu (metadata) cho từng kết quả)*.
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này thuộc đề cương chính thức của kỳ thi **Claude Certified Architect – Foundations (CCA-f)** [617–618]:
+
+* **Phân vùng kiến thức chính (Primary Domains):**
+  * **Domain 2: Tool Design & MCP Integration** (Trọng số **18%**) [623–624].
+  * **Domain 1: Agentic Architecture & Orchestration** (Trọng số **27%**) [623–624].
+* **Task Statements liên quan:**
+  * **Task Statement 2.1:** Design effective tool interfaces with clear descriptions and boundaries [645–648].
+  * **Task Statement 1.3 & 5.1:** Structured context passing & context management across multi-step workflows [636, 687–689].
+* **Trích dẫn chuẩn từ tài liệu Exam Guide Blueprint:**
+  * *Kỹ năng trong Task Statement 1.3 & 5.1:*
+    > *"Using structured data formats to separate content from metadata (source URLs, document names, page numbers, document IDs) when passing context between agents/tools to enable accurate downstream processing"* [636, 688–689].
+    > *"Trimming verbose tool outputs and returning structured data with clear identifiers so downstream tools can reference specific items unambiguously"* [687–689].
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Quy tắc "Mã định danh lập trình cho chuỗi công cụ" (Programmatic IDs for Tool Chaining):** Khi một công cụ được dùng trong quy trình nhiều bước (*multi-step workflow*) — tức là kết quả của Công cụ A được nạp lại cho Claude để gọi tiếp Công cụ B — đầu ra của Công cụ A bắt buộc phải trả về **dữ liệu có cấu trúc chứa ID định danh độc nhất (`document_id`)** [636, 687–689].
+2. **Khác biệt giữa UI người dùng và API Tác tử:**
+   * Văn bản tự nhiên (*human-readable strings*) hoặc đường liên kết Web (*URLs*) được thiết kế cho con người xem trên giao diện.
+   * Dữ liệu JSON có cấu trúc chứa `id` và `metadata` được thiết kế dành riêng cho LLM Agent để truyền tham số chính xác vào các hàm API xử lý ở bước sau (ví dụ: `get_document_details(doc_id="doc_123")`) [636, 676–678].
+3. **Triệt tiêu sự mơ hồ (Ambiguity Elimination):** Nếu chỉ trả về tiêu đề tệp ("Q2 Budget Proposal"), hệ thống có thể gặp lỗi nếu trong cơ sở dữ liệu có nhiều tệp trùng tên hoặc tiêu đề bị thay đổi. Mã `document_id` cố định sẽ triệt tiêu hoàn toàn rủi ro này.
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng:** **Structured data containing document IDs and metadata for each result.**
+  * *Phân tích:* Khớp 100% với nguyên tắc thiết kế công cụ của Anthropic [636, 687–689]. Việc trả về JSON/Object có cấu trúc chứa `document_id` và các trường `metadata` giúp Claude nhận biết chính xác từng tài xế/tài liệu và truyền trực tiếp mã `id` đó vào các cuộc gọi công cụ tiếp theo một cách đáng tin cậy.
+
+* **Lựa chọn 2 (Sai):** *URLs that users can click to open the document in their browser.*
+  * *Phân tích:* Các đường dẫn URL cho trình duyệt chỉ phục vụ hiển thị trên giao diện người dùng (UI), hoàn toàn không giúp tác tử (Agent) trích xuất mã định danh để gọi các công cụ backend tiếp theo trong quy trình tự động.
+
+* **Lựa chọn 3 (Sai):** *More detailed human-readable descriptions including the size and authors.*
+  * *Phân tích:* Các mô tả văn bản tự nhiên chi tiết dành cho người đọc vẫn thiếu mã định danh duy nhất (`doc_id`), đồng thời làm phình to token không cần thiết và bắt Claude phải phân tích chuỗi chữ phức tạp thay vì đọc trực tiếp thuộc tính dữ liệu có cấu trúc [687–688].
+
+* **Lựa chọn 4 (Sai):** *A JSON array of document titles extracted from the search results.*
+  * *Phân tích:* Mảng JSON chứa tiêu đề tệp vẫn chưa đủ. Tiêu đề tệp có thể bị trùng lặp, chứa ký tự đặc biệt hoặc không thể dùng làm tham số gọi API backend vốn luôn yêu cầu mã định danh duy nhất (`document_id`).
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Multi-step Workflows** | Quy trình xử lý nhiều bước | Chuỗi tác vụ liên hoàn trong đó kết quả của công cụ trước làm đầu vào cho công cụ sau. |
+| **Document ID / Identifier** | Mã định danh tài liệu | Chuỗi ký tự duy nhất đại diện cho một tài nguyên/tệp trong hệ thống backend. |
+| **Structured Data** | Dữ liệu có cấu trúc | Dữ liệu được tổ chức dưới dạng các cặp key-value (như JSON Object) dễ dàng cho máy đọc. |
+| **Human-readable Format** | Định dạng dành cho người đọc | Văn bản tự nhiên được trình bày để con người dễ hiểu nhưng khó phân tích bằng lập trình. |
+| **Tool Chaining** | Chuỗi liên kết công cụ | Kỹ thuật tác tử gọi nối tiếp nhiều công cụ dựa trên dữ liệu thu được ở các bước trước. |
+| **Metadata** | Siêu dữ liệu / Dữ liệu tả | Các thông tin bổ sung đi kèm tài liệu (như tác giả, kích thước, ngày tạo, trạng thái). |
+
+---
+
+## Practice Test 2 — Q111: Composite Tool for Large Connector Sets
+
+
+**Đáp án đúng:**  
+**Design a `find_and_execute(description, params)` composite tool that searches and immediately executes the best matching connector.** *(Thiết kế một công cụ tổng hợp composite tool `find_and_execute(description, params)` để tìm kiếm và thực thi ngay lập tức connector phù hợp nhất)* [647, 650–651].
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+* **Phân vùng kiến thức chính (Primary Domains):**
+  * **Domain 2: Tool Design & MCP Integration** (Trọng số **18%**) [623–624].
+  * **Domain 1: Agentic Architecture & Orchestration** (Trọng số **27%**) [623–624].
+* **Task Statements liên quan:**
+  * **Task Statement 2.1:** Design effective tool interfaces with clear descriptions and boundaries [645–648].
+  * **Task Statement 2.3:** Distribute tools appropriately across agents and configure tool choice [650–652].
+* **Trích dẫn chuẩn từ tài liệu Exam Guide Blueprint:**
+  * *Kiến thức trong Task Statement 2.3:*
+    > *"The principle that giving an agent access to too many tools (e.g., 18+ instead of 4-5) degrades tool selection reliability by increasing decision complexity"* [650–651].
+  * *Kỹ năng trong Task Statement 2.1 & 2.3:*
+    > *"Splitting generic tools into purpose-specific tools or encapsulating large tool sets into abstraction layers to reduce decision complexity and prevent direct misrouting"* [647, 650–651].
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Quy tắc "Giới hạn số lượng công cụ khả dụng" (Tool Set Restriction):**
+   * Khi số lượng công cụ khả dụng tăng lên quá lớn (50+ connectors), độ chính xác chọn công cụ của LLM sẽ giảm mạnh (trong bài là rơi xuống 58%) do quá tải quyết định (*decision complexity*) [650–651].
+   * Khuyến nghị kiến trúc của Anthropic là **chỉ nên cung cấp 4–5 công cụ khả dụng** cho tác tử tại một thời điểm [650–651].
+2. **Mẫu thiết kế công cụ tổng hợp (Composite Tool Pattern):**
+   * Bằng cách đóng gói 50+ connectors phía sau một công cụ tổng hợp duy nhất là `find_and_execute(description, params)`, tác tử **không còn nhìn thấy 50+ connectors trực tiếp nữa**.
+   * Kỹ thuật này giải quyết triệt để **cả 2 sự cố**:
+     1. Tác tử không thể "bỏ qua việc tìm kiếm để gọi trực tiếp" vì các connector lẻ không còn nằm trong danh sách công cụ khả dụng.
+     2. Tác tử không thể "chọn nhầm connector sau khi tìm kiếm" vì việc tìm kiếm, khớp cú pháp và thực thi được đóng gói nguyên khối (*atomic execution*) bên trong công cụ composite.
+3. **Quy tắc loại trừ cạm bẫy:**
+   * **Bổ sung mô tả/Few-shot cho 50+ tools:** Việc làm phình to mô tả cho 50+ công cụ vừa gây lãng phí token cực lớn (*context bloat*), vừa không giải quyết được gốc rễ bài toán quá tải công cụ [650–651, 688].
+   * **Thêm động công cụ (Dynamic Adding & Persistence):** Nếu các công cụ đã phát hiện vẫn tồn tại (*persist*), sau nhiều lượt gọi danh sách công cụ sẽ bị phình to lại về mức 50+, khiến sự cố chọn sai tái phát [650–651].
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng (Lựa chọn 4):** **Design a `find_and_execute(description, params)` composite tool that searches and immediately executes the best matching connector.**
+  * *Phân tích:* Khớp 100% với nguyên tắc thiết kế hạ tầng của Anthropic [647, 650–651]. Công cụ tổng hợp (`composite tool`) `find_and_execute` ẩn toàn bộ 50+ connectors đằng sau một giao diện duy nhất. Tác tử chỉ cần truyền mô tả nhu cầu (`description`) và tham số (`params`), hệ thống backend sẽ tự động tra cứu, chọn connector tối ưu và thực thi ngay lập tức. Giải pháp này giúp đưa danh sách công cụ khả dụng về lại mức tối thiểu, triệt tiêu hoàn toàn khả năng tác tử gọi nhầm hoặc nhảy bước [647, 650–651].
+
+* **Lựa chọn 1 (Sai):** *Design search_connectors to dynamically add matched connectors to the agent's available tools. Connectors start unavailable and persist once discovered.*
+  * *Phân tích:* Việc duy trì cố định (*persist*) các công cụ sau khi tìm thấy sẽ làm danh sách công cụ của tác tử phình toàn bộ qua các lượt thoại. Cuối cùng, hệ thống sẽ quay trở lại trạng thái ban đầu là có 50+ công cụ khả dụng, khiến độ chính xác chọn công cụ lại sụt giảm về 58% [650–651].
+
+* **Lựa chọn 2 (Sai):** *Design connectors with built-in compatibility validation that return descriptive errors for mismatched requests.*
+  * *Phân tích:* Đây là phương pháp xử lý bị động (*reactive validation*). Việc trả về lỗi khi truyền sai tham số chỉ bắt tác tử phải thực hiện vòng lặp thử lại (*retry loop*), gây tốn kém token và gia tăng độ trễ (*latency*), nhưng hoàn toàn không giải quyết được nguyên nhân gốc rễ là sự quá tải danh sách công cụ ở đầu vào [648–650].
+
+* **Lựa chọn 3 (Sai):** *Enhance all connector descriptions with detailed usage samples, edge cases, and input requirements. Add few-shot examples showing the correct search-then-use workflow.*
+  * *Phân tích:* Việc thêm mô tả chi tiết và ví dụ few-shot cho toàn bộ 50+ connectors sẽ khiến kích thước prompt bùng nổ (*prompt bloat / token waste*), gây ra hiện tượng trôi chỉ dẫn (*Instruction Degradation*) và phân tán sự chú ý (*Attention Dilution*) [688–689]. Ngoài ra, tác tử vẫn có thể bỏ qua bước `search` để gọi trực tiếp connector nếu nó nhìn thấy connector đó trong mảng `tools` [650–651].
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Composite Tool Pattern** | Mẫu thiết kế công cụ tổng hợp | Mẫu thiết kế đóng gói nhiều chức năng/API con đằng sau một giao diện công cụ duy nhất để giảm độ phức tạp quyết định [647, 650–651]. |
+| **Tool Selection Accuracy** | Độ chính xác chọn công cụ | Tỷ lệ tác tử chọn đúng công cụ và truyền đúng tham số dựa trên ngữ cảnh hội thoại [645–647, 650]. |
+| **Decision Complexity** | Độ phức tạp quyết định | Mức độ quá tải của LLM khi phải lựa chọn giữa quá nhiều công cụ khả dụng (khuyên dùng 4–5 công cụ/agent) [650–651]. |
+| **Atomic Execution** | Thực thi nguyên khối | Quy trình tìm kiếm, khớp tham số và chạy công cụ diễn ra trong 1 bước xử lý khép kín, tránh đứt đoạn giữa các lượt. |
+| **Dynamic Tool Loading** | Nạp công cụ động | Kỹ thuật thêm/bớt công cụ vào danh sách khả dụng của tác tử dựa trên trạng thái phiên làm việc [650–652]. |
+| **Prompt Bloat / Token Overhead** | Tràn Prompt / Chi phí Token thừa | Hiện tượng nạp quá nhiều mô tả công cụ và ví dụ khiến prompt bị phình to và giảm hiệu năng mô hình [688–689]. |
+
+---
+
+## Practice Test 2 — Q112: Local Retry for Transient Errors and Agent Recovery for Permanent Errors
+
+**Đáp án đúng:**  
+**Handle transient errors (timeouts, 503s) with automatic retries inside the tool implementation, and surface non-transient errors (permission denied, validation fallures) to the agent with descriptive messages so it can take corrective action.** *(Xử lý các lỗi tạm thời (timeouts, 503) bằng cơ chế tự động thử lại bên trong mã nguồn triển khai công cụ, và chuyển các lỗi không tạm thời (bị từ chối quyền, lỗi xác thực) lên cho tác tử kèm thông báo mô tả chi tiết để nó có thể thực hiện hành động khắc phục)*.
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này thuộc đề cương chính thức của kỳ thi **Claude Certified Architect – Foundations (CCA-f)**:
+
+* **Phân vùng kiến thức chính (Primary Domains):**
+  * **Domain 2: Tool Design & MCP Integration** (Trọng số **18%**).
+  * **Domain 5: Context Management & Reliability** (Trọng số **15%**).
+* **Task Statements liên quan:**
+  * **Task Statement 2.2: Implement structured error responses for MCP tools**.
+  * **Task Statement 5.3: Implement error propagation strategies across multi-agent systems**.
+* **Trích dẫn chuẩn từ Exam Guide Blueprint:**
+  * *Kiến thức trong Task Statement 2.2 & 5.3:*
+    > *"The distinction between transient errors (timeouts, service unavailability), validation errors (invalid input), business errors (policy violations), and permission errors"*.
+    > *"The difference between retryable and non-retryable errors, and how returning structured metadata prevents wasted retry attempts"*.
+  * *Kỹ năng trong Task Statement 2.2 & 5.3:*
+    > *"Implementing local error recovery within subagents for transient failures, propagating to the coordinator only errors that cannot be resolved locally along with partial results and what was attempted"*.
+    > *"Including retriable: false flags and customer-friendly explanations for business rule violations so the agent can communicate appropriately"*.
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Phân chia trách nhiệm xử lý lỗi (Error-Handling Responsibility Partitioning):**
+   * **Lỗi tạm thời (*Transient Errors* - Timeout, HTTP 503):** Cần được tự động **thử lại cục bộ (*local error recovery*)** bên trong mã nguồn triển khai của công cụ (*tool implementation*) kèm thuật toán lùi thời gian lũy thừa (*exponential backoff*). Việc này giúp triệt tiêu các sự cố mạng ngắn hạn mà không làm gián đoạn tác tử hay tiêu tốn lượt thoại (*turns*).
+   * **Lỗi không tạm thời (*Non-transient Errors* - HTTP 403 Permission Denied, HTTP 422 Validation Failure):** Cần được **chuyển lên cho tác tử (*agent*)** kèm thông báo mô tả có cấu trúc (`isRetryable: false`) để tác tử nhận biết nguyên nhân và thực hiện hành động chỉnh sửa thích hợp (ví dụ: sửa lại tham số hoặc thông báo cho người dùng).
+2. **Quy tắc bác bỏ các phản mẫu (Anti-Patterns):**
+   * **Bắt tất cả lỗi để thử lại bên trong công cụ (Handle ALL errors inside tool):** Thử lại các lỗi 403 hay 422 bên trong công cụ là vô ích vì các lỗi này sẽ không bao giờ thành công nếu không có sự thay đổi về quyền hạn hoặc tham số đầu vào.
+   * **Nuốt lỗi / Trả lỗi chung chung (Generic Universal Error Handler):** Im lặng trả về thông báo chung chung "dịch vụ không khả dụng" sẽ che giấu ngữ cảnh quan trọng, khiến tác tử không thể đưa ra quyết định khôi phục chính xác.
+   * **Đẩy tất cả lỗi về cho tác tử ngay lập tức (Surface ALL errors immediately):** Bắt tác tử phải xử lý các đợt gián đoạn mạng ngắn hạn sẽ làm lãng phí token và lượt thoại hội thoại không cần thiết.
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng (Lựa chọn 4):** **Handle transient errors (timeouts, 503s) with automatic retries inside the tool implementation, and surface non-transient errors (permission denied, validation fallures) to the agent with descriptive messages so it can take corrective action.**
+  * *Phân tích:* Khớp 100% với kiến trúc phân chia trách nhiệm chuẩn của Anthropic. Việc tự động thử lại lỗi 503/timeout bên trong công cụ giúp giải quyết gọn gàng các sự cố mạng tạm thời. Trong khi đó, việc chuyển các lỗi 403/422 kèm thông báo mô tả chi tiết lên cho tác tử giúp nó dừng ngay các cuộc gọi thử lại vô ích và thực hiện bước sửa lỗi tương ứng.
+
+* **Lựa chọn 1 (Sai):** *Handle all errors inside the tool: Implement retries with exponential backoff for every error type, and only surface a failure to the agent after a fixed number of retry attempts have been exhausted.*
+  * *Phân tích:* Việc thực hiện retry đối với **mọi loại lỗi** (bao gồm cả 403 Permission Denied và 422 Validation Failure) bên trong công cụ là một sự lãng phí tài nguyên nghiêm trọng. Các lỗi về quyền truy cập hay sai định dạng dữ liệu sẽ không bao giờ tự phục hồi dù có thử lại bao nhiêu lần đi nữa.
+
+* **Lựa chọn 2 (Sai):** *Implement a universal error handler that catches all exceptions and returns a generic "tool unavailable- try again later" message, shielding the agent from error complexity.*
+  * *Phân tích:* Đây là phản mẫu bị Anthropic cảnh báo trực tiếp (*generic error status hides valuable context*). Trả về một thông báo lỗi chung chung sẽ giấu đi bản chất của sự cố, khiến tác tử tưởng rằng đó là lỗi mạng tạm thời và tiếp tục gọi lại công cụ một cách sai lầm.
+
+* **Lựa chọn 3 (Sai):** *Surface all errors to the agent immediately with detailed context, and let the agent decide which errors to retry and how many times-keeping the tool implementation stateless and simple.*
+  * *Phân tích:* Việc đẩy toàn bộ lỗi (bao gồm cả lỗi mạng tạm thời) lên cho tác tử xử lý sẽ làm tăng số lượt hội thoại (*conversational turns*), tốn kém chi phí token và gia tăng độ trễ cho những sự cố hoàn toàn có thể tự khôi phục cục bộ ngay bên trong mã nguồn công cụ.
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Transient Error** | Lỗi tạm thời | Lỗi do nghẽn mạng hoặc quá tải dịch vụ ngắn hạn (503, timeout) có thể tự hết khi thử lại. |
+| **Non-transient Error** | Lỗi không tạm thời / Lỗi vĩnh viễn | Lỗi do sai tham số, vi phạm quy tắc nghiệp vụ hoặc thiếu quyền (403, 422) không thể tự hết nếu không chỉnh sửa. |
+| **Local Error Recovery** | Tự khôi phục lỗi cục bộ | Kỹ thuật tự động thử lại lỗi tạm thời ngay bên trong mã nguồn công cụ trước khi báo lên tác tử. |
+| **IsRetryable Flag** | Cờ báo khả năng thử lại | Thuộc tính dữ liệu có cấu trúc trả về cho tác tử để cho biết lỗi này có nên thử lại hay không. |
+| **Error Propagation** | Truyền thấu lỗi | Chiến lược gửi thông tin lỗi từ công cụ/subagent lên tác tử điều phối với đầy đủ ngữ cảnh có cấu trúc. |
+| **Exponential Backoff** | Lùi thời gian chờ lũy thừa | Thuật toán tăng dần thời gian chờ giữa các lần thử lại để tránh làm quá tải hệ thống đích. |
+
+---
+
+
+## Practice Test 2 — Q113: Actionable Alternative Slots in Appointment Booking Errors
+
+
+**Đáp án đúng:**  
+**Modify `book_appointment` to return detailed failure information including currently available alternative slots when the requested slot is unavailable, enabling the agent to retry with a different time.** *(Chỉnh sửa công cụ `book_appointment` để trả về thông tin thất bại chi tiết bao gồm danh sách các khung giờ thay thế hiện có khi khung giờ yêu cầu bị trùng, cho phép tác tử thử lại ngay với khung giờ khác)*.
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này nằm trong bộ đề chuẩn bị của kỳ thi **Claude Certified Architect – Foundations (CCA-f)** [617–618]:
+
+* **Phân vùng kiến thức chính (Primary Domains):**
+  * **Domain 2: Tool Design & MCP Integration** (Trọng số **18%**) [623–624].
+  * **Domain 5: Context Management & Reliability** (Trọng số **15%**) [623–624].
+* **Task Statements liên quan:**
+  * **Task Statement 2.2:** Implement structured error responses for MCP tools [648–650].
+  * **Task Statement 5.3:** Implement error propagation strategies across multi-agent systems [692–694].
+* **Trích dẫn chuẩn từ tài liệu Exam Guide Blueprint:**
+  * *Kiến thức trong Task Statement 5.3 & 2.2:*
+    > *"Structured error context (failure type, attempted query, partial results, alternative approaches) as enabling intelligent coordinator recovery decisions"* [692–693].
+  * *Kỹ năng trong Task Statement 5.3:*
+    > *"Returning structured error context including failure type, what was attempted, partial results, and potential alternatives to enable coordinator recovery"* [693–694].
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Nguyên tắc "Mở rộng Phản hồi Lỗi có Cấu trúc kèm Phương án Thay thế" (Structured Error Context with Alternatives):**  
+   Khi một công cụ gặp sự cố không thể hoàn thành tác vụ (như khung giờ đặt lịch đã bị người khác nhanh tay đăng ký trước), nguyên tắc chuẩn của Anthropic là **trả về phản hồi lỗi kèm theo thông tin chi tiết và danh sách các phương án thay thế khả thi ngay trong đợt gọi công cụ đó** (`potential alternatives to enable coordinator recovery`).
+2. **Giảm thiểu Số lượt gọi API & Độ trễ (Turn & Latency Optimization):**  
+   Nếu công cụ `book_appointment` thất bại mà chỉ báo "Slot not available", tác tử sẽ phải tốn thêm 1 lượt thoại gọi lại `get_available_slots` để lấy danh sách mới, rồi mới gọi lại `book_appointment` ở lượt tiếp theo (tốn 2-3 lượt). Việc trả luôn danh sách khung giờ trống thay thế trong kết quả lỗi giúp tác tử chọn ngay khung giờ mới trong lượt thoại tiếp theo [687–688, 693].
+3. **Phân biệt với các giải pháp cồng kềnh (Anti-Patterns):**
+   * **Thêm công cụ trung gian (`hold_slot`):** Tăng thêm 1 bước gọi tool trung gian khiến luồng xử lý bị kéo dài và gia tăng độ trễ không cần thiết [687–688].
+   * **Gộp thành 1 công cụ duy nhất (`find_and_book_appointment`):** Việc gộp tìm kiếm và đặt lịch làm một sẽ phá hỏng quy trình tương tác khi người dùng cần được xem/xác nhận danh sách các khung giờ trước khi đưa ra quyết định đặt lịch.
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng (Lựa chọn 1):** **Modify `book_appointment` to return detailed failure information including currently available alternative slots when the requested slot is unavailable, enabling the agent to retry with a different time.**
+  * *Phân tích:* Khớp 100% với kỹ năng trong Task Statement 5.3 của Anthropic. Khi đặt lịch thất bại do xung đột thời gian (race condition), việc trả về thông tin lỗi có cấu trúc kèm theo các khung giờ trống thay thế (`alternative slots`) giúp tác tử có đủ ngữ cảnh để đưa ra quyết định đặt lại lịch hoặc gợi ý cho người dùng ngay lập tức mà không cần thực hiện thêm cuộc gọi khám phá thừa.
+
+* **Lựa chọn 2 (Sai):** *Keep both tools but add retry logic to the agent's system prompt, instructing it to call `get_available_slots` again and select a different time if booking fails.*
+  * *Phân tích:* Việc dựa vào hướng dẫn prompt để bắt tác tử gọi lại `get_available_slots` sẽ làm tăng thêm lượt thoại (*conversational turn*), gây tốn token và tăng độ trễ. Ngoài ra, giữa đợt gọi `get_available_slots` mới và `book_appointment` tiếp theo vẫn có thể tiếp tục xảy ra xung đột thời gian [637–638, 687].
+
+* **Lựa chọn 3 (Sai):** *Add a `hold_slot(provider_id, slot_time)` tool that creates a 60 second temporary reservation, requiring the agent to call it between checking availability and booking.*
+  * *Phân tích:* Bắt tác tử phải gọi thêm công cụ `hold_slot` giữa bước kiểm tra và đặt lịch sẽ làm tăng ma sát quy trình (*workflow friction*) và số lượng cuộc gọi tool không cần thiết [687–688].
+
+* **Lựa chọn 4 (Sai):** *Combine both tools into a single `find_and_book_appointment` that atomically checks availability and books, returning either the confirmed booking or available alternatives*
+  * *Phân tích:* Tự động tìm và đặt ngay một lịch ngẫu nhiên mà không thông qua sự lựa chọn/xác nhận của người dùng là phản mẫu trong thiết kế tác tử đặt lịch. Người dùng cần có quyền lựa chọn khung giờ phù hợp với họ trước khi tác tử thực hiện hành động đặt chỗ [689–692].
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Structured Error Context** | Ngữ cảnh lỗi có cấu trúc | Dữ liệu lỗi chi tiết bao gồm nguyên nhân, trạng thái và các phương án thay thế trả về cho tác tử [692–693]. |
+| **Potential Alternatives** | Các phương án thay thế tiềm năng | Dữ liệu gợi ý khả thi trả về cùng thông báo lỗi để tác tử tự khôi phục luồng xử lý. |
+| **Race Condition / Time-of-Check to Time-of-Use** | Xung đột thời gian thực thi | Tình huống dữ liệu bị thay đổi bởi người dùng khác giữa lúc tác tử kiểm tra và lúc thực thi action. |
+| **Error Recovery** | Khôi phục sau lỗi | Khả năng tác tử nhận biết lỗi và đưa ra hành động khắc phục thông minh dựa trên ngữ cảnh lỗi. |
+| **Actionable Error Metadata** | Siêu dữ liệu lỗi có thể thực thi | Thông tin lỗi chứa đủ dữ liệu để tác tử có thể dùng làm tham số cho bước xử lý tiếp theo. |
+
+---
+## Practice Test 2 — Q114: Local Retry for Network Timeouts and Immediate Validation Errors
+
+**Đáp án đúng:**  
+**Implement automatic retry with backoff for network timeouts inside the tool; return syntax errors immediately with parameter validation details.** *(Triển khai cơ chế tự động thử lại kèm lùi thời gian (backoff) cho các lỗi quá giờ mạng bên trong công cụ; trả về lỗi cú pháp ngay lập tức kèm chi tiết xác thực tham số)* [650–651, 693–696].
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này thuộc đề cương chính thức của kỳ thi **Claude Certified Architect – Foundations (CCA-f)** [619–620]:
+
+* **Phân vùng kiến thức chính (Primary Domains):**
+  * **Domain 2: Tool Design & MCP Integration** (Trọng số **18%**) [625–626].
+  * **Domain 5: Context Management & Reliability** (Trọng số **15%**) [625–626].
+* **Task Statements liên quan:**
+  * **Task Statement 2.2: Implement structured error responses for MCP tools** [650–652].
+  * **Task Statement 5.3: Implement error propagation strategies across multi-agent systems** [693–696].
+* **Trích dẫn chuẩn từ Exam Guide Blueprint:**
+  * *Kiến thức trong Task Statement 2.2 & 5.3:*
+    > *"The distinction between transient errors (timeouts, service unavailability) and validation errors (invalid input, syntax errors)"* [650, 693–694].
+    > *"Why uniform error responses prevent the agent from making appropriate recovery decisions"* [650–651, 694].
+  * *Kỹ năng trong Task Statement 2.2 & 5.3:*
+    > *"Implementing local error recovery within tools/subagents for transient failures, propagating to the agent only errors that cannot be resolved locally along with parameter validation details"* [651, 695–696].
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Nguyên tắc phân chia trách nhiệm xử lý lỗi (Error Handling Partitioning):**
+   * **Lỗi quá giờ mạng (Network Timeouts - chiếm 8%):** Thuộc nhóm **Lỗi tạm thời (Transient Errors)**. Cần được xử lý tự động ngay **bên trong mã nguồn triển khai công cụ (*inside the tool implementation*)** bằng cơ chế thử lại kèm backoff [650–651, 695–696]. Cách này giúp khắc phục lỗi ngay tại chỗ mà không làm tiêu tốn lượt thoại (*conversational turns*) hay làm phiền Agent [633, 688–689].
+   * **Lỗi cú pháp truy vấn (Query Syntax Errors - chiếm 4%):** Thuộc nhóm **Lỗi xác thực tham số (Validation Errors)**. Dù có thử lại bao nhiêu lần cũng không thể thành công [651, 681–682]. Cần **trả về ngay lập tức cho Agent** kèm theo chi tiết xác thực tham số (*parameter validation details*) để Agent nhận biết sai sót và chỉnh sửa lại bộ lọc [651, 681–683].
+2. **Nhận diện lý do loại trừ Đáp án 3 (Option 3):**
+   * Nếu chỉ trả về lỗi kèm cờ `retryable: true/false` cho Agent xử lý (Đáp án 3), tác tử vẫn phải tiêu tốn 1 lượt thoại để nhận kết quả lỗi timeout và gửi lại đợt gọi API mới, gây tăng độ trễ và lãng phí token vô ích [633, 688–689].
+3. **Nhận diện lý do loại trừ Đáp án 1 & 2 (Option 1 & 2):**
+   * **Dùng Few-shot trong System Prompt (Đáp án 1):** Prompting mang tính xác suất (*probabilistic*) và không thể giúp công cụ tự động thử lại lỗi mạng ở tầng hạ tầng [639–642].
+   * **Thử lại đồng nhất cho tất cả các lỗi (Đáp án 2):** Thử lại lỗi cú pháp (lỗi 4% không tạm thời) bên trong công cụ sẽ làm treo hệ thống qua các lần retry vô nghĩa trước khi báo cạn retries [650–651].
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng (Lựa chọn 4):** **Implement automatic retry with backoff for network timeouts inside the tool; return syntax errors immediately with parameter validation details.**
+  * *Phân tích:* Khớp 100% với nguyên tắc thiết kế độ tin cậy của Anthropic [650–651, 693–696]. Việc tự động retry lỗi timeout bên trong công cụ giúp giải quyết gọn gàng 8% sự cố mạng mà không làm ngắt luồng của Agent. Đồng thời, việc trả lỗi cú pháp kèm chi tiết tham số về cho Agent giúp giải quyết dứt điểm 4% lỗi do sai bộ lọc filter mà người dùng cung cấp [651, 681–683].
+
+* **Lựa chọn 1 (Sai):** *Add few-shot examples to your system prompt demonstrating how to distinguish network errors from syntax errors and handle each case appropriately.*
+  * *Phân tích:* Hướng dẫn qua prompt chỉ mang tính xác suất và không thể thay thế cho logic xử lý lập trình cứng (*programmatic error handling*) ở tầng công cụ [639–642]. Ngoài ra, bắt Agent tự phân biệt và gửi lại cuộc gọi mạng vẫn làm lãng phí lượt thoại không cần thiết [633, 688–689].
+
+* **Lựa chọn 2 (Sai):** *Apply exponential backoff retry logic to all errors uniformly, returning a generic "service temporarily unavailable" message after max retries are exhausted.*
+  * *Phân tích:* Xử lý đồng nhất (*uniformly*) cho mọi loại lỗi là một phản mẫu [650–651, 694]. Lỗi cú pháp filter là lỗi không tạm thời, thử lại nhiều lần chỉ làm tốn thời gian chờ mà vẫn thất bại.
+
+* **Lựa chọn 3 (Sai):** *Return all errors with a retryable boolean flag and error type details.*
+  * *Phân tích:* Mặc dù cờ `retryable` là một thực hành tốt trong phản hồi lỗi có cấu trúc [651, 695–696], nhưng nếu trả cả lỗi timeout về cho Agent quyết định retry, hệ thống vẫn bắt Agent trải qua thêm một lượt thoại (*conversational turn*) xử lý không cần thiết [633, 688–689]. Xử lý cục bộ lỗi timeout ngay bên trong công cụ (như Đáp án 4) là giải pháp tối ưu hơn [651, 695–696].
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Local Error Recovery** | Khôi phục lỗi cục bộ | Kỹ thuật xử lý các lỗi mạng tạm thời ngay bên trong mã nguồn triển khai công cụ [651, 695–696]. |
+| **Parameter Validation Details** | Chi tiết xác thực tham số | Thông tin mô tả chi tiết vị trí/nguyên nhân sai cú pháp của tham số đầu vào để tác tử tự sửa lỗi [651, 681–683]. |
+| **Transient vs. Non-Transient Errors** | Lỗi tạm thời v.s Lỗi vĩnh viễn | Sự khác biệt giữa lỗi mạng ngắn hạn (timeout, 503) và lỗi logic/tham số cố định (400, syntax error) [650–651, 693–694]. |
+| **Turn Waste / Overhead** | Lãng phí lượt thoại | Hiện tượng tác tử phải tốn thêm các lượt gọi API phụ chỉ để xử lý các lỗi có thể tự khắc phục ở tầng hạ tầng [633, 688–689]. |
+| **Exponential Backoff** | Lùi thời gian chờ lũy thừa | Thuật toán tăng dần khoảng thời gian giữa các lần thử lại để tránh làm quá tải dịch vụ đích [650–651]. |
+
+---
+## Practice Test 2 — Q115: Field-Level Confidence Thresholds for Human Review
+
+
+**Đáp án đúng:**  
+**Return fields with confidence scores, plus a `requires_review` boolean computed using your tested confidence thresholds, along with a `review_reasons` array explaining which fields triggered review.** *(Trả về các trường dữ liệu kèm điểm tin cậy, cộng với cờ logic `requires_review` được tính toán bằng các ngưỡng điểm tin cậy đã qua kiểm thử, đi kèm mảng `review_reasons` giải thích rõ trường nào đã kích hoạt yêu cầu xem xét)*.
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này thuộc đề cương chính thức của kỳ thi **Claude Certified Architect – Foundations (CCA-f)** [619–620]:
+
+* **Phân vùng kiến thức chính (Primary Domain):** **Domain 5: Context Management & Reliability** (Trọng số **15%**) [625–626].
+* **Task Statement:** **Task Statement 5.5: Design human review workflows and confidence calibration** (Thiết kế luồng công việc xem xét của con người và hiệu chỉnh độ tin cậy) [699–701].
+* **Trích dẫn chuẩn từ tài liệu Exam Guide Blueprint:**
+  * *Kiến thức trong Task Statement 5.5:*
+    > *"The risk that aggregate accuracy metrics (e.g., 97% overall) may mask poor performance on specific document types or fields"*.
+    > *"Field-level confidence scores calibrated using labeled validation sets for routing review attention"* [699–700].
+  * *Kỹ năng trong Task Statement 5.5:*
+    > *"Having models output field-level confidence scores, then calibrating review thresholds using labeled validation sets"*.
+    > *"Routing extractions with low model confidence or ambiguous/contradictory source documents to human review, prioritizing limited reviewer capacity"* [700–701].
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Tránh bẫy "Điểm tổng hợp" (Aggregate Metrics Masking):** Một điểm số tổng hợp chung cho toàn bộ tài liệu (ví dụ 90% trung bình) có thể che giấu sai sót ở một trường dữ liệu cực kỳ quan trọng (như tổng số tiền thanh toán `amount` bị trích xuất sai dù tên nhà cung cấp `vendor` và ngày tháng `date` có điểm tin cậy cao).
+2. **Quy tắc "Tính toán cờ logic bằng mã lập trình" (Programmatically Computed Flags):**
+   * LLM xử lý số liệu xác suất thô (0.0 – 1.0) qua prompt rất kém và mang tính xác suất (*probabilistic*), dễ gây ra hiện tượng đánh giá lệch ngưỡng (đã dẫn đến 23% trích xuất sai bị bỏ qua và 31% xem xét duyệt người dùng không cần thiết) [639–642, 699–700].
+   * Ngưỡng tin cậy (*confidence thresholds*) phải được **kiểm thử và tính toán bằng mã lập trình cứng (*programmatic calculation*)** ở tầng công cụ, trả về cờ boolean `requires_review` rõ ràng cho Agent [639–642, 700].
+3. **Giữ cấu trúc Schema ổn định kèm theo lý do minh bạch (`review_reasons`):** Việc bổ sung mảng `review_reasons` chỉ rõ trường nào bị tụt điểm tin cậy (ví dụ: `["amount confidence 0.45 < threshold 0.85"]`) giúp Agent hiểu ngay nguyên nhân và cung cấp ngữ cảnh chính xác cho chuyên viên xem xét [700–701].
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng (Lựa chọn 4):** **Return fields with confidence scores, plus a `requires_review` boolean computed using your tested confidence thresholds, along with a `review_reasons` array explaining which fields triggered review.**
+  * *Phân tích:* Khớp 100% với kiến trúc chuẩn trong Task Statement 5.5 của Anthropic [699–701]. Công cụ tính toán cờ `requires_review` dựa trên các ngưỡng đã được hiệu chỉnh qua tập dữ liệu kiểm thử. Việc trả về cờ boolean này cùng mảng `review_reasons` cung cấp chỉ dẫn chắc chắn (*deterministic guidance*) cho Agent, loại bỏ tình trạng đoán mò xác suất, đồng thời giữ nguyên Schema gốc của dữ liệu hóa đơn [699–701].
+
+* **Lựa chọn 1 (Sai):** *Compute an aggregate extraction quality score across all fields and return it alongside the extracted values. Include a text summary describing the overall extraction reliability.*
+  * *Phân tích:* Vi phạm trực tiếp nguyên tắc thiết kế được nêu trong Task Statement 5.5. Điểm chất lượng tổng hợp (*aggregate score*) sẽ làm mờ đi các trường bị lỗi đơn lẻ, khiến Agent bỏ qua các hóa đơn có tổng tiền `amount` bị sai nếu hai trường còn lại đạt điểm tối đa.
+
+* **Lựa chọn 2 (Sai):** *Return fields with their raw confidence scores and add detailed few-shot examples to your system prompt demonstrating how to interpret different confidence ranges and when to request human review.*
+  * *Phân tích:* Việc bắt LLM tự đọc số xác suất thô và quyết định qua few-shot prompt thuộc nhóm hướng dẫn mang tính xác suất (*probabilistic instructions*) [639–642]. Thực tế sản xuất đã chứng minh cách làm này tạo ra tỷ lệ lỗi 23% và 31% lãng phí tài nguyên người duyệt.
+
+* **Lựa chọn 3 (Sai):** *Return fields organized into `verified` and `needs_verification` objects based on confidence thresholds.*
+  * *Phân tích:* Phân rã dữ liệu thành hai object động (`verified` và `needs_verification`) sẽ làm **biến đổi cấu trúc Schema đầu ra của công cụ** [678–681]. Điều này khiến các hệ thống xử lý phía sau (*downstream parser*) bị rối do không biết một trường cụ thể (như `vendor`) sẽ nằm ở object nào tùy thuộc vào từng đợt chạy [678–681].
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Confidence Calibration** | Hiệu chỉnh độ tin cậy | Quy trình dùng tập dữ liệu gán nhãn kiểm thử để xác định các ngưỡng điểm tin cậy chính xác cho từng trường dữ liệu [699–700]. |
+| **Aggregate Accuracy Metric** | Điểm số độ chính xác tổng hợp | Chỉ số trung bình cộng (dễ che giấu các lỗi nghiêm trọng ở từng trường dữ liệu riêng lẻ). |
+| **Field-Level Confidence Score** | Điểm tin cậy cấp trường dữ liệu | Điểm số xác suất riêng biệt cho từng thuộc tính trích xuất (vendor, amount, date) [699–700]. |
+| **Programmatic Thresholding** | Phân ngưỡng bằng lập trình | Việc tính toán cờ kiểm duyệt dựa trên mã nguồn thay vì để LLM tự diễn giải con số xác suất [639–642, 700]. |
+| **Stratified Random Sampling** | Lấy mẫu ngẫu nhiên phân tầng | Phương pháp kiểm tra chất lượng trích xuất bằng cách lấy mẫu đại diện từ từng nhóm/loại tài liệu [699–700]. |
+
+---
+
+
+## Practice Test 2 — Q116: Identifier-Based Game Lookup Before Score Updates
+
+### **Đáp án đúng:**  
+**Replace the three parameters with a single `game_id` parameter and a separate `search_games` lookup tool that returns matching game IDs.** *(Thay thế 3 tham số bằng một tham số `game_id` duy nhất và thêm một công cụ tra cứu `search_games` riêng biệt trả về danh sách các `game_id` khớp)* [648–650].
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+* **Phân vùng kiến thức chính (Primary Domains):**
+  * **Domain 2: Tool Design & MCP Integration** (Trọng số **18%**) [625–626].
+  * **Domain 1: Agentic Architecture & Orchestration** (Trọng số **27%**) [625–626].
+* **Task Statements liên quan:**
+  * **Task Statement 2.1: Design effective tool interfaces with clear descriptions and boundaries** [647–650].
+  * **Task Statement 1.3: Configure subagent invocation, context passing, and spawning** [637–639].
+* **Trích dẫn chuẩn từ Exam Guide Blueprint:**
+  * *Kiến thức trong Task Statement 2.1 & 1.3:*
+    > *"Splitting generic tools into purpose-specific tools or using lookup tools with unique identifiers to eliminate parameter ambiguity and prevent misrouting"* [648–650].
+    > *"Trimming verbose tool outputs and returning structured data with clear identifiers so downstream tools can reference specific items unambiguously"* [688–691].
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Mẫu thiết kế "Tra cứu bằng Mã định danh duy nhất" (Identifier-based Lookup Pattern):**  
+   Khi một công cụ nhận vào nhiều tham số dạng chuỗi tự do (`string`) dễ gây nhầm lẫn hoặc mơ hồ (như biệt danh đội bóng, định dạng ngày tháng không nhất quán, các trận đấu lại/rematches trong cùng mùa giải), thiết kế giao diện công cụ tối ưu nhất của Anthropic là **Chuyển sang quy trình 2 bước**:
+   * **Bước 1 (Tra cứu):** Dùng công cụ `search_games` để tìm kiếm linh hoạt theo ngữ cảnh và trả về dữ liệu có cấu trúc chứa mã định danh duy nhất (`game_id`).
+   * **Bước 2 (Thực thi):** Công cụ `update_game_score` chỉ nhận đúng tham số `game_id` để cập nhật [648–650].
+2. **Giải quyết triệt để cả 3 sự cố sản xuất (Production Failures):**
+   * **Sự cố 1 (Dùng biệt danh):** Công cụ `search_games` xử lý việc tìm kiếm linh hoạt ở backend và trả về đối tượng chuẩn.
+   * **Sự cố 2 (Sai định dạng ngày):** Bỏ hẳn việc bắt Agent tự format chuỗi ngày tháng khi gọi hàm cập nhật.
+   * **Sự cố 3 (Trùng trận tái đấu/Rematches):** Mỗi trận đấu cụ thể trong mùa giải đều có một `game_id` độc nhất, triệt tiêu 100% sự mơ hồ.
+3. **Quy tắc loại trừ cạm bẫy:**
+   * **Sửa mô tả bằng Prompt (Lựa chọn 1):** Hướng dẫn qua prompt chỉ mang tính xác suất (*probabilistic*), vẫn có tỷ lệ sai sót nhất định [639–642].
+   * **Ràng buộc Enum & Regex (Lựa chọn 3):** Dù giải quyết được tên chính thức và định dạng ngày, nhưng **không thể giải quyết được sự cố các trận tái đấu (rematches)** có cùng cặp đấu trong mùa giải.
+   * **Thêm tham số `season` & cờ xác nhận (Lựa chọn 4):** Cờ `confirm_before_update` làm tăng thêm ma sát lượt thoại không cần thiết (*conversational friction*) mà vẫn không tạo ra mã định danh duy nhất để phân biệt các trận đấu trùng cặp.
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng (Lựa chọn 2):** **Replace the three parameters with a single `game_id` parameter and a separate `search_games` lookup tool that returns matching game IDs.**
+  * *Phân tích:* Khớp 100% với nguyên tắc thiết kế công cụ của Anthropic [648–650]. Chuyển sang mô hình tra cứu `search_games` \\(\rightarrow\\) lấy `game_id` \\(\rightarrow\\) gọi `update_game_score(game_id)` giúp hệ thống triệt tiêu toàn bộ 3 nguồn rủi ro bằng một mã định danh tuyệt đối (`deterministic identifier`).
+
+* **Lựa chọn 1 (Sai):** *Add detailed examples to the tool description showing the required date format and complete list of official team names.*
+  * *Phân tích:* Viết ví dụ chi tiết trong mô tả công cụ chỉ mang tính chỉ dẫn xác suất (*probabilistic guidance*) [639–642]. Agent vẫn có xác suất vi phạm khi gặp tên biệt danh lạ hoặc khi xử lý các trận tái đấu phức tạp.
+
+* **Lựa chọn 3 (Sai):** *Add enum constraints listing valid team names for both team parameters, and add a regex pattern enforcing ISO 8601 format for the date parameter.*
+  * *Phân tích:* Enum và Regex giúp bắt buộc kiểu dữ liệu ở tầng Schema [678–681], nhưng **hoàn toàn thất bại trước sự cố các trận tái đấu (rematches)**. Khi hai đội gặp nhau nhiều lần trong mùa giải, việc truyền đúng tên enum và đúng định dạng ngày ISO 8601 vẫn không ngăn được việc Agent chọn nhầm trận đấu cần cập nhật.
+
+* **Lựa chọn 4 (Sai):** *Add a season parameter to disambiguate rematches, and add a confirm_before_update flag that returns the resolved game details for the agent to verify before the score is committed.*
+  * *Phân tích:* Cờ `confirm_before_update` ép Agent phải trải qua thêm một lượt thoại xác nhận không cần thiết, gây tăng độ trễ và chi phí token [687–689]. Ngoài ra, việc bổ sung tham số `season` vẫn không giải quyết được vấn đề biệt danh hay định dạng ngày tháng không nhất quán.
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Identifier-based Lookup Pattern** | Mẫu tra cứu dựa trên mã định danh | Kỹ thuật dùng tool tra cứu để lấy `ID` duy nhất trước khi gọi tool ghi/sửa dữ liệu [648–650]. |
+| **Parameter Ambiguity** | Sự mơ hồ của tham số | Tình huống tham số đầu vào là chuỗi tự do dễ bị hiểu nhầm hoặc trùng lặp dữ liệu. |
+| **Deterministic Identifier** | Mã định danh tuyệt đối | Chuỗi ID độc nhất (như `game_id`, `customer_id`) giúp máy tính xác định chính xác 100% đối tượng. |
+| **Two-Step Tool Pattern** | Mẫu thiết kế công cụ 2 bước | Quy trình tách biệt giữa bước Tìm kiếm (`Search/Lookup`) và bước Thực thi (`Execute/Update`) [648–650]. |
+
+---
+
+## Practice Test 2 — Q117: Scoped Tool Access to Reduce Decision Complexity
+
+**Đáp án đúng:**  
+**Choosing from 18 tools instead of 4-5 relevant ones increases decision complexity beyond reliable selection thresholds.** *(Việc lựa chọn từ 18 công cụ thay vì 4-5 công cụ có liên quan làm tăng độ phức tạp của quyết định vượt quá ngưỡng chọn lựa tin cậy)*.
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này trích từ **Scenario 3: Multi-Agent Research System** thuộc đề cương chính thức của kỳ thi **Claude Certified Architect – Foundations (CCA-f)** [628–629]:
+
+*   **Phân vùng kiến thức chính (Primary Domain):** **Domain 2: Tool Design & MCP Integration** (Trọng số **18%**) [625–626].
+*   **Task Statement:** **Task Statement 2.3: Distribute tools appropriately across agents and configure tool choice** (Phân phối công cụ phù hợp giữa các tác tử và cấu hình lựa chọn công cụ) [652–655].
+*   **Trích dẫn chuẩn từ tài liệu Exam Guide Blueprint:**
+    *   *Kiến thức trong Task Statement 2.3:*
+        > *"The principle that giving an agent access to too many tools (e.g., 18 instead of 4-5) degrades tool selection reliability by increasing decision complexity"*.
+        > *"Why agents with tools outside their specialization tend to misuse them (e.g., a synthesis agent attempting web searches)"*.
+    *   *Kỹ năng trong Task Statement 2.3:*
+        > *"Restricting each subagent's tool set to those relevant to its role, preventing cross-specialization misuse"*.
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1.  **Nguyên tắc "Giới hạn số lượng công cụ / Phân quyền công cụ theo phạm vi" (Scoped Tool Access):**
+    *   Khi một tác tử được cung cấp quá nhiều công cụ khả dụng (ví dụ 18 công cụ thay vì tập hợp tối ưu 4–5 công cụ), độ tin cậy trong việc lựa chọn công cụ của LLM sẽ sụt giảm mạnh do sự gia tăng **độ phức tạp của quyết định (*decision complexity*)** vượt quá ngưỡng chọn lựa tin cậy.
+    *   Nếu một tác tử có access tới các công cụ nằm ngoài phạm vi chuyên môn của nó (như tác tử tổng hợp `synthesis agent` có công cụ `web_search`), nó sẽ xu hướng sử dụng sai/gọi nhầm các công cụ đó.
+2.  **Quy tắc phân bổ công cụ tối ưu (Tool Distribution Best Practices):**
+    *   Mỗi subagent chỉ nên được cấp đúng danh sách các công cụ phục vụ vai trò chuyên biệt của nó (*role-relevant tools*).
+    *   Nếu cần thực hiện thao tác liên vai trò với tần suất cao (ví dụ: tác tử tổng hợp cần xác minh lại một mốc thời gian), hãy cung cấp một công cụ thu hẹp chuyên biệt (như `verify_fact`) thay vì cấp toàn bộ công cụ tìm kiếm web diện rộng.
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+*   **Đáp án đúng (Lựa chọn 1):** **Choosing from 18 tools instead of 4-5 relevant ones increases decision complexity beyond reliable selection thresholds.**
+  * *Phân tích:* Khớp 100% với nguyên văn kiến thức chuẩn được nêu trong Task Statement 2.3 của Anthropic [652–653]. Việc mở toàn bộ 18 công cụ cho cả 4 subagents làm phình to không gian quyết định, khiến LLM bị quá tải nhận thức (*decision complexity*) và dẫn đến việc gọi công cụ sai mục đích/ngoài chuyên môn [652–653].
+
+*   **Lựa chọn 2 (Sai):** *The coordinator cannot track which capabilities each subagent has, leading to misrouted tasks.*
+  * *Phân tích:* Đề bài mô tả sự cố là do chính các subagent tự gọi công cụ sai chuyên môn khi đang thực thi (ví dụ: `synthesis agent` tự gọi `web_search`), chứ không phải do `coordinator` phân rã công việc sai.
+
+*   **Lựa chọn 3 (Sai):** *The agents' role descriptions in their system prompts conflict with having access to tools outside that role.*
+  * *Phân tích:* Mặc dù mô tả vai trò trong system prompt có định hướng hành vi, nhưng nguyên nhân cốt lõi khiến LLM chọn sai công cụ ở tầng hạ tầng chính là do danh sách `tools` khả dụng quá rộng (18 công cụ) làm tăng độ phức tạp quyết định [652–653].
+
+*   **Lựa chọn 4 (Sai):** *The tool definitions consume too much context window space, leaving insufficient room for task content.*
+  * *Phân tích:* Mặc dù mô tả 18 công cụ tiêu tốn token ngữ cảnh, nhưng vấn đề chính được hỏi ở đây là **"tại sao hành vi chọn công cụ lại kém"** (*poor tool selection behavior*). Lý do trực tiếp là sự quá tải ngưỡng quyết định (*decision complexity threshold*) [652–653].
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Decision Complexity** | Độ phức tạp quyết định | Mức độ quá tải nhận thức của LLM khi phải lựa chọn giữa quá nhiều công cụ khả dụng cùng lúc (ngưỡng tối ưu là 4–5 tools). |
+| **Scoped Tool Access** | Phân quyền công cụ theo phạm vi | Việc giới hạn danh sách công cụ cấp cho từng subagent đúng với vai trò chuyên môn của nó. |
+| **Cross-Specialization Misuse** | Sử dụng sai ngoài chuyên môn | Hiện tượng subagent tự ý gọi các công cụ thuộc lĩnh vực/chức năng của subagent khác. |
+| **Cross-Role Tools** | Công cụ liên vai trò | Các công cụ đặc thù có phạm vi hẹp (như `verify_fact`) được cấp thêm cho subagent để xử lý các nhu cầu xác minh tần suất cao. |
+| **Tool Selection Reliability** | Độ tin cậy chọn công cụ | Mức độ chính xác của LLM khi chọn đúng công cụ và truyền đúng tham số dựa trên mô tả [647–648, 652]. |
+
+---
+
+
+## Practice Test 2 — Q118: Using /memory to Diagnose CLAUDE.md Loading
+
+**Đáp án đúng:**  
+**Run `/memory` to check which memory files are loaded and verify your CLAUDE.md is included.** *(Chạy lệnh `/memory` để kiểm tra các tệp bộ nhớ (memory files) nào đang được nạp và xác minh tệp `CLAUDE.md` của bạn đã được đưa vào hay chưa)*.
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+* **Phân vùng kiến thức chính (Primary Domain):** **Domain 3: Claude Code Configuration & Workflows** (Trọng số **20%**) [626, 659–662].
+* **Task Statement:** **Task Statement 3.1: Configure CLAUDE.md files with appropriate hierarchy, scoping, and modular organization** [659–662].
+* **Trích dẫn chuẩn từ tài liệu Exam Guide Blueprint:**
+  * *Knowledge of:*
+    > *"The CLAUDE.md configuration hierarchy: user-level (`~/.claude/CLAUDE.md`), project-level (`.claude/CLAUDE.md` or root `CLAUDE.md`), and directory-level (subdirectory `CLAUDE.md` files)"* [659–660].
+  * *Skills in:*
+    > *"Using the `/memory` command to verify which memory files are loaded and diagnose inconsistent behavior across sessions"*.
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Nhận diện dạng bài "Chẩn đoán hành vi không nhất quán giữa các phiên" (Diagnosing Inconsistent Session Behavior):**
+   * Khi `CLAUDE.md` được cấu hình ở gốc dự án nhưng Claude Code hoạt động lúc đúng lúc sai tùy từng phiên làm việc (*session*), bước chẩn đoán đầu tiên (*first diagnostic step*) luôn là kiểm tra xem hệ thống đã thực sự nạp đúng các tệp quy tắc/ngữ cảnh đó vào bộ nhớ hay chưa.
+2. **Lệnh `/memory` trong Claude Code CLI:**
+   * `/memory` là lệnh đặc hiệu trong Claude Code giúp hiển thị toàn bộ danh sách các tệp memory/CLAUDE.md đang được active trong ngữ cảnh làm việc hiện tại.
+3. **Phân biệt giữa Bước Chẩn đoán (Diagnostic Step) và Bước Hành động (Action Step):**
+   * Bổ sung ví dụ hay tạo tệp quy tắc mới (`.claude/rules/`) là các **hành động chỉnh sửa**, không phải là **bước chẩn đoán nguyên nhân ban đầu** [661, 664–666].
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng (Lựa chọn 3):** **Run `/memory` to check which memory files are loaded and verify your CLAUDE.md is included.**
+  * *Phân tích:* Khớp 100% với kỹ năng chẩn đoán được yêu cầu trong Task Statement 3.1 của Anthropic. Lệnh `/memory` giúp bạn lập tức chẩn đoán nguyên nhân gốc rễ: liệu tệp `CLAUDE.md` ở thư mục gốc có thực sự được Claude Code nạp vào bộ nhớ ngữ cảnh trong phiên làm việc đó hay không.
+
+* **Lựa chọn 1 (Sai):** *Add more detailed code examples to your CLAUDE.md showing the exact ApiError usage pattern for different endpoint types.*
+  * *Phân tích:* Đây là bước điều chỉnh hướng dẫn prompt (*prompt refinement*) [668–671]. Khi nguyên nhân khiến Claude Code ngẫu nhiên bỏ qua quy tắc giữa các phiên chưa được xác định (có thể do tệp không được nạp), việc thêm ví dụ vào `CLAUDE.md` sẽ không giải quyết được vấn đề nếu tệp đó hoàn toàn bị bỏ qua khi khởi tạo phiên.
+
+* **Lựa chọn 2 (Sai):** *Search for conflicting instructions in `~/.claude/CLAUDE.md` or `~/.claude/rules/` that might override your project conventions.*
+  * *Phân tích:* Theo thứ tự ưu tiên cấu hình (*configuration hierarchy*), cấu hình cấp dự án (*project-level*) sẽ ghi đè cấu hình cấp người dùng (`~/.claude/CLAUDE.md`) [659–660]. Hơn nữa, việc tìm kiếm xung đột thủ công tốn thời gian hơn rất nhiều so với việc chỉ cần gõ ngay lệnh `/memory` để xem danh sách tệp được nạp.
+
+* **Lựa chọn 4 (Sai):** *Create path-specific rules in `claude/rules/handlers.md` with YAML frontmatter scoping the error handling instructions to your API handler files.*
+  * *Phân tích:* Tạo tệp `.claude/rules/` phân vùng theo đường dẫn (*path-specific rules*) là một giải pháp rất tốt để tối ưu hóa việc nạp quy tắc theo tệp [660, 664–666], nhưng đó là **bước hành động tái cấu trúc quy tắc**, không phải là **bước chẩn đoán nguyên nhân ban đầu** như yêu cầu của đề bài.
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **`/memory` Command** | Lệnh `/memory` | Lệnh built-in trong Claude Code dùng để kiểm tra danh sách các tệp memory/CLAUDE.md đang được nạp. |
+| **Configuration Hierarchy** | Thứ tự ưu tiên cấu hình | Cấu trúc phân cấp cấu hình từ cấp User (`~/.claude/`) \\(\rightarrow\\) cấp Project (`.claude/`) \\(\rightarrow\\) cấp Directory [659–660]. |
+| **Project-Scoped CLAUDE.md** | `CLAUDE.md` cấp dự án | Tệp cấu hình nằm ở thư mục gốc dự án, được lưu vào Git để chia sẻ quy tắc chung cho cả team [659–661]. |
+| **Diagnostic Step** | Bước chẩn đoán | Hành động kiểm tra/tra cứu nguyên nhân gây lỗi trước khi thực hiện các thay đổi mã nguồn hoặc tệp cấu hình. |
+
+---
+
