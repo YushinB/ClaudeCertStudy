@@ -45,6 +45,84 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 14. **Human review & batch:** calibrated field-level confidence + validate per segment before automating; Batch API only when latency-tolerant (interval + 24h ≤ SLA), resubmit only failed `custom_id`s. (4.5, 5.5)
 15. **Exam technique:** read every constraint ("evolving", "explicitly", "guaranteed", "both goals"); prefer the option that mirrors Exam Guide wording; one-size-fits-all or arbitrary numbers are usually traps.
 
+### Exam Trap Catalog: how the wrong options are built (read this before the real exam)
+
+**Exam facts (Exam Guide):** 60 questions, 120 minutes (about 2 min per question), multiple choice with **one correct and three incorrect** options, **4 scenarios drawn from a bank of 6**, scaled score 100–1000, pass = 720. Questions are realistic production scenarios, so the test is *judgment about tradeoffs*, not trivia. Every wrong option is usually a **plausible engineer's instinct** applied at the wrong layer, so learn the archetypes below rather than memorizing answers.
+
+#### A. The 12 trap archetypes (and how to spot them)
+
+| # | Trap archetype | Tell-tale wording in the option | Why it is wrong | Correct instinct |
+|---|---|---|---|---|
+| 1 | **Prompt-only "guarantee"** | few-shot examples, "CRITICAL / MUST / NEVER", extra system prompt rules, "instruct the model to always…" | Prompts are probabilistic (non-zero failure rate, Exam Guide 1.4) | Enforce in **code**: hook, `tool_choice`, schema, gate, post-loop check |
+| 2 | **Right tool, wrong layer** | hook vs. post-loop check; `--allowedTools` vs. system prompt; hook + context flag vs. check inside the tool | The mechanism exists but does not cover the stated requirement (per-call hook ≠ loop termination; permissions ≠ awareness) | Match the mechanism to *exactly* what the requirement says |
+| 3 | **Bolt-on machinery** | extra classifier, router, second LLM scoring pass, keyword/regex filter, coverage filter, post-processing | Treats the symptom downstream; root cause is upstream (description, schema, CLAUDE.md, criteria) | **Fix at the source layer** ("in the first place") |
+| 4 | **Lowers the odds, no guarantee** | split turn budgets, more turns, bigger window, more examples, "80% threshold" | Reduces frequency but the failure path still exists | Look for the option that makes the failure **impossible or always handled** |
+| 5 | **Lossy / undifferentiated compression** | summarize the whole history, sliding window over conversation, vector DB *replacing* history, prune old turns | Loses exact facts (numbers, dates, IDs, traits); treats permanent and ephemeral content alike | **Separate** persistent facts (case facts / story bible / state object) from ephemeral chatter; compress only the latter |
+| 6 | **Hiding the error** | return empty result as success, generic "Operation failed", log-only, terminate the whole workflow, auto-correct without evidence | Coordinator/agent loses the information needed to decide (retry / explain / escalate) | **Structured error context** (`errorCategory`, `isRetryable`, partial results); flag and route to a human |
+| 7 | **Trusting a weak signal** | aggregate accuracy ("97% overall"), model self-reported confidence, sentiment score | Averages hide segment failures; self-reported confidence and sentiment are poorly calibrated proxies (5.2) | Validate **by segment** against real labels; use explicit criteria, not sentiment |
+| 8 | **Hard-coded for a moving target** | predefined categories, fast-track for "simple" queries, classifier trained on history, fixed pipeline | Breaks when inputs are "uneven and evolving" | **Model-driven, per-query** decisions by the coordinator |
+| 9 | **"Knowing" ≠ "being able"** | agent definitions exist but `Task` not in `allowedTools`; field is in schema but model still fabricates | Awareness or existence does not equal capability or correct behavior | Check the *enabling* mechanism (`allowedTools`, explicit "null if not stated") |
+| 10 | **Right idea, wrong direction / scope** | scopes reversed (`.mcp.json` vs `~/.claude.json`), `replace_all` when not "every occurrence", blanket rules for a local problem | Correct concept applied to the wrong target | Re-read who needs it (team vs. me) and how wide the change should be |
+| 11 | **Solves a different problem** | `defer_loading` for tool *overlap*; error messages to teach parameter *meaning*; human approval prompt for a *structural* guarantee; vector retrieval for exact recall | Real technique, but not for the question asked | Restate the problem in one line, then check each option solves *that* |
+| 12 | **False premise inside the option** | "X is incompatible with tool use under `-p`", "non-interactive mode disables file tools", "attention naturally decays", "system prompt only sent on first request" | The justification is factually wrong even if the action sounds fine | **Verify every factual claim** inside an option; a false premise kills it |
+
+#### B. Signal words → answer shape
+
+| If the question says… | Think… |
+|---|---|
+| "guaranteed", "must", "compliance", "cannot be left to model discretion", "tamper-proof", "regardless of how it terminates" | **Code-level enforcement** (hook to block a call; check inside the tool itself; post-loop outcome check; `tool_choice`) |
+| "generalize to novel patterns", "judgment calls", "ambiguous cases" | **Few-shot with annotated reasoning** (acceptable vs. genuine issue) |
+| "in the first place", "reduce the rate of…" | **Upstream context** (CLAUDE.md standards, criteria, examples), not filtering afterwards |
+| "structurally eliminate", "semantic overlap between tools" | **Redesign tools** (merge overlapping, split overloaded), not more examples or sub-agents |
+| "uneven and evolving", "diverse and changing queries" | **Coordinator analyzes each query dynamically** |
+| customer "explicitly demands a human" | **Escalate immediately**; "frustrated but resolvable" → offer to fix now or escalate |
+| "context only X% used" or short conversation but drift | **Not a capacity problem**: salience/conflict (state object) or compounding dilution (periodic reinforcement) |
+| "fine until turn N, then degrades" | Compounding dilution of the system prompt → **periodic reinforcement**, not rewording the prompt |
+| "precise numbers/dates/IDs must survive a long chat" | **Structured facts block outside summarized history** |
+| "stale tool results", "returning after hours" | **Fresh session + injected summary + re-fetch** (not blind `--resume`) |
+| "97% overall accuracy" before removing human review | **Segment-level analysis** on labeled data first |
+| "latency-tolerant", "overnight", "not blocking" | **Message Batches API** (50% cheaper, up to 24h, no latency SLA); resubmit only failed `custom_id`s |
+| "independent subtasks" | **Parallel Task calls in a single coordinator response** |
+| "shared with the team" vs "only I am testing" | `.mcp.json` (project) vs `~/.claude.json` (user) |
+| "standard integration with an external system" | **Existing MCP server** over custom Bash/API glue |
+| "extra instructions but keep default behavior" | `--append-system-prompt` (not `--system-prompt`) |
+
+#### C. Confusable pairs (decide which side the question is on)
+
+| Pair | Rule of thumb |
+|---|---|
+| Hook vs. post-loop check | Hook = intercept/block **one tool call**; post-loop check = handle **however the loop ended** |
+| Enforce in hook vs. in the tool itself | If the tool already receives the parameter (e.g., amount), enforce **inside the tool**: fewest moving parts |
+| `--allowedTools` vs. system prompt | Permissions (what runs without asking) vs. behavior/awareness (what the model knows to do) |
+| `--system-prompt` vs. `--append-system-prompt` | Replace defaults vs. add to defaults (keeps built-in tool guidance) |
+| Schema types vs. descriptions | Types validate **shape**; descriptions teach **meaning and format** |
+| Error messages vs. descriptions | Error messages = recovery **after** a bad call; descriptions = understanding **before** it |
+| Null vs. empty array | Both signal "not stated"; Exam Guide wording is "optional (nullable)"; prefer whichever option mirrors Exam Guide wording (see Q106) |
+| `"any"` vs. forced `tool_choice` | `"any"` = must call *some* tool; forced `{"type":"tool","name":…}` = must call *that* one |
+| `--resume` vs. `--continue` vs. `fork_session` | Named session with other work since = `--resume`; compare alternatives from one baseline = fork |
+| Summarize vs. window vs. retrieve | Conversation history → hybrid (summarize older, keep recent verbatim); accumulated RAG results → window the last 2–3 queries |
+| Retry with feedback vs. blind retry | Works only if the correct answer **exists in the input**; if it is absent, retries invite hallucination |
+| Plan mode vs. direct execution | Decided by **task clarity and blast radius**, not by familiarity with the code |
+| Access failure vs. empty result | A timeout is not "no matches": keep them distinct in the error payload |
+
+#### D. 60-second routine for each question
+
+1. **Name the scenario and Task Statement** (which domain is this testing?).
+2. **Underline the constraints**: "guaranteed", "in the first place", "both goals", "without", "only", numbers (35% context, 15 turns, 97% accuracy).
+3. **Restate the problem in one line**, then cover the options.
+4. **Classify each wrong option** into archetypes 1–12; usually three of four fit one immediately.
+5. **Check factual claims** inside options (archetype 12) and **scope/direction** (archetype 10).
+6. Between two near-identical options, choose the one whose **wording mirrors the Exam Guide**; "one-size-fits-all" and arbitrary numbers are usually traps.
+7. Do not overthink beyond what the scenario states; do not import assumptions the question did not give. Flag and move on if stuck (about 2 minutes per question).
+
+#### E. My recurring misses (from Practice Tests 1–3): watch out for these
+
+- **Choosing architectural reshuffles over a fix at the point of failure** (splitting agents, adding retrieval, adding a scoring stage) when the real fix is a schema change, a description, or a code-level check.
+- **Picking guardrail-sounding options that do a different job**: strict JSON schema types (validation, not understanding), `--allowedTools` (permissions, not behavior), environment variables (config, not instructions).
+- **Undifferentiated compression** of conversation (summarize everything) instead of protecting persistent facts.
+- **Scope/direction slips** on configuration questions (which file is shared, which is personal).
+- **Domain 4 and 5** are the highest-miss areas (see Study Focus): re-read schema design, few-shot, context management, escalation before the exam.
+
 ### Disputed practice-site answers (follow the Exam Guide)
 
 | Question | Site's key | Exam Guide says choose | Task Statement |
@@ -53,6 +131,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 | Q49 Customer demands "a real person NOW" | Ask one targeted question | Escalate immediately, no investigation first | 5.2 |
 | Q57 Multi-issue session near context limit | Narrative summary of earlier turns | Structured issue data in a separate context layer | 5.1 |
 | Q60 Returning customer after 4 hours | "Start… inject summary" (vs. near-identical "Create… with summary") | Same concept; prefer "inject" wording | 1.7 |
+| Q106 Schema for brief reviews ("Great product!") — absence signal for pros/cons | Empty arrays + "unclear" enum | Wording is "optional (nullable)"; "unclear" enum confirmed. Empty-vs-null unresolved (see Q106 section) | 4.3 |
 
 ## Task Decomposition: Exam Rule of Thumb
 
@@ -1449,7 +1528,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q61: Invoice Line Items vs. Grand Total Mismatch: Exam Rule of Thumb
+## Practice Test 2 — Q61: Invoice Line Items vs. Grand Total Mismatch
 
 | Situation | Best approach |
 |---|---|
@@ -1483,7 +1562,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q62: Untested Code Paths in a 45-File Legacy Payment Module: Exam Rule of Thumb
+## Practice Test 2 — Q62: Untested Code Paths in a 45-File Legacy Payment Module
 
 | Situation | Best approach |
 |---|---|
@@ -1518,7 +1597,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q63: Coordinator Narrates Delegation But Never Invokes Subagents: Exam Rule of Thumb
+## Practice Test 2 — Q63: Coordinator Narrates Delegation But Never Invokes Subagents
 
 | Situation | Best approach |
 |---|---|
@@ -1550,7 +1629,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q64: Query Routing by Complexity, "Diverse and Evolving" (confirms the disputed Q44 pattern)
+## Practice Test 2 — Q64: Dynamic Query Routing by Complexity
 
 **Note:** This question is a near-duplicate of the disputed Q44 in Practice Test 1 ("Dynamic Query Routing by Complexity"), but here the platform's own answer key agrees with the Exam Guide (dynamic coordinator analysis = correct, fast-path bypass = explicitly marked wrong/"Sai"). This confirms the Exam Guide reading was right and the Q44 site's key was the outlier.
 
@@ -1586,7 +1665,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q65: Uniform MCP Error Responses Cause Inconsistent Agent Behavior (near-duplicate of the isError lesson)
+## Practice Test 2 — Q65: Uniform MCP Error Responses Cause Inconsistent Agent Behavior
 
 | Situation | Best approach |
 |---|---|
@@ -1685,7 +1764,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q68: Plan Mode vs. Direct Execution for Production Bugs: Exam Rule of Thumb
+## Practice Test 2 — Q68: Plan Mode vs. Direct Execution for Production Bugs
 
 | Situation | Best approach |
 |---|---|
@@ -1717,7 +1796,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q69: High Precision / Low Recall in Automated Review — Splitting Finding from Thresholding: Exam Rule of Thumb
+## Practice Test 2 — Q69: Separating Finding from Thresholding in Automated Review
 
 | Situation | Best approach |
 |---|---|
@@ -1750,7 +1829,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q70: Guaranteeing Preview-Before-Execute with a Single-Use Confirmation Token: Exam Rule of Thumb
+## Practice Test 2 — Q70: Preview Before Execute with a Single-Use Confirmation Token
 
 | Situation | Best approach |
 |---|---|
@@ -1783,7 +1862,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q71: Blind Retry vs. Retry-With-Feedback for Semantic Validation Failures (confirms existing 4.4 pattern)
+## Practice Test 2 — Q71: Retry with Feedback for Semantic Validation Failures
 
 **Note:** Near-duplicate of the "Retry only if the answer exists in the input" rule already in this cheat sheet (Task Statement 4.4), but this instance sharpens a specific distinction the exam tests: **blind retry (re-run unchanged, hope for a pass) vs. retry-with-feedback (re-run with the document + failed extraction + validation errors so the model can correct with direction)**.
 
@@ -1816,7 +1895,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q72: Comparing Techniques for Guaranteed JSON Schema Compliance: Exam Rule of Thumb
+## Practice Test 2 — Q72: Guaranteed JSON Schema Compliance
 
 | Technique | Guarantee level |
 |---|---|
@@ -1848,7 +1927,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q73: Tool Definitions Consuming Context Budget Near the Window Limit (answered correctly — confirmed)
+## Practice Test 2 — Q73: Tool Definitions Consuming Context Budget
 
 **Note:** Initially answered by reasoning alone (no "Đúng/Sai" tag was visible on the first screenshot). The user later re-sent the same question with the platform's key revealed, confirming this reasoned answer was correct.
 
@@ -1882,7 +1961,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q74: tool_choice "any" for Guaranteed Structured Output Across Unknown Document Types (confirms existing tool_choice pattern)
+## Practice Test 2 — Q74: tool_choice "any" for Unknown Document Types
 
 **Note:** Near-duplicate/confirmation of the existing "tool_choice: Forcing Tool Calls" rule (Task Statement 4.3) — this instance specifically tests the `"any"` case (as opposed to `"auto"` or a forced-specific-tool), which hadn't yet had its own worked example in this cheat sheet.
 
@@ -1916,7 +1995,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q75: Retry-With-Feedback for Pydantic Type Errors (confirms 4.4 pattern again)
+## Practice Test 2 — Q75: Retry with Feedback for Pydantic Type Errors
 
 **Note:** Near-duplicate of Q71 and the existing "Retry only if the answer exists in the input" rule (Task Statement 4.4) — same lesson, different error type (a format/type mismatch: model returned a string range `"2 to 3"` where a float was expected).
 
@@ -1929,7 +2008,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q76: Progressive Summarization Done Right for Long-Running Accumulating Conversations: Exam Rule of Thumb
+## Practice Test 2 — Q76: Progressive Summarization for Long-Running Conversations
 
 | Situation | Best approach |
 |---|---|
@@ -1961,7 +2040,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q77: Stateless API, Missing Messages Array History (confirms existing 5.1 pattern)
+## Practice Test 2 — Q77: Missing Conversation History in a Stateless API
 
 **Note:** Direct duplicate of the existing "Stateless API: Passing Conversation History" rule (Task Statement 5.1) — same root cause, playlist-preferences framing.
 
@@ -1974,7 +2053,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q78: System Prompt Adherence Drift — Accumulated Responses Diluting Influence, Not "Attention Decay": Exam Rule of Thumb
+## Practice Test 2 — Q78: System Prompt Adherence Drift from Accumulated Responses
 
 | Situation | Best approach / correct diagnosis |
 |---|---|
@@ -2006,7 +2085,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q79: Sliding Window Loses Old Content → Hybrid Summarize-Older/Keep-Recent-Verbatim (confirms Q76 pattern)
+## Practice Test 2 — Q79: Hybrid Summarization for Sliding-Window Context Loss
 
 **Note:** Near-duplicate of Q76's "Progressive Summarization Done Right" rule (Task Statement 5.1) — same fix, framed as replacing a lossy sliding window.
 
@@ -2019,7 +2098,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q80: The Fix for Guideline Drift — Periodic User-Role Reinforcement (directly pairs with Q78)
+## Practice Test 2 — Q80: Periodic User-Role Reinforcement for Guideline Drift
 
 **Note:** This is the actionable "fix" half of Q78's diagnosis. Q78 established that guideline drift over turns is caused by the assistant's own accumulated responses diluting the system prompt's influence (a compounding effect, not context-length exhaustion). This question confirms that reading explicitly: conversation length is well within context limits (30K of 200K tokens), ruling out capacity-based explanations, and asks for the correct intervention.
 
@@ -2053,7 +2132,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q81: Injecting External Webhook Events into an Ongoing Conversation via the System Prompt: Exam Rule of Thumb
+## Practice Test 2 — Q81: Injecting External Webhook Events Through the System Prompt
 
 | Situation | Best approach |
 |---|---|
@@ -2085,7 +2164,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q82: Periodic Reminder Injection for Proficiency-Adaptation Drift (⚠️ self-reasoned, no answer key shown — near-duplicate of Q78/Q80)
+## Practice Test 2 — Q82: Periodic Reminder Injection for Proficiency-Adaptation Drift
 
 **Note:** No answer tag was provided for this question (pasted as plain text, no screenshot with Đúng/Sai). This is my own reasoning applying the confirmed Q78/Q80 pattern, not a verified platform key.
 
@@ -2118,7 +2197,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q85: Stratified Random Sampling for High-Confidence Errors (confirms existing 5.5 monitoring pattern)
+## Practice Test 2 — Q85: Stratified Random Sampling for High-Confidence Errors
 
 **Note:** Direct application of the existing "Stratified random sampling for measuring error rates… and detecting novel error patterns" quote already in this cheat sheet (Task Statement 5.5), here specifically for errors *within* the high-confidence group where the confidence signal itself has already failed.
 
@@ -2152,7 +2231,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q86: Structured Fact Database for Precision-Dependent Questions Across Papers (confirms structured-layer pattern)
+## Practice Test 2 — Q86: Structured Fact Database for Precision-Dependent Questions
 
 **Note:** Direct variant of the existing "structured case-facts / separate context layer" rule (Q57 pattern) and the cheat sheet principle "structured data beats text" (Task Statement 5.1/5.6) — here applied to a research assistant discussing multiple academic papers over an extended conversation.
 
@@ -2186,7 +2265,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q87: Plan Mode for Broad, Multi-File Breaking-Change Migrations (contrasts with Q68's direct-execution case)
+## Practice Test 2 — Q87: Plan Mode for Broad, Multi-File Breaking-Change Migrations
 
 **Note:** This pairs directly with Q68 ("Plan Mode vs. Direct Execution for Production Bugs"), but sits on the opposite side of that rule: there, a narrow, high-signal production bug (clear stack trace) called for direct execution; here, a broad, multi-file, multi-module change with several *interacting* breaking changes calls for plan mode first.
 
@@ -2220,7 +2299,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q88: Iterative Refinement for Interacting Formatting Issues (first Task Statement 3.5 example)
+## Practice Test 2 — Q88: Iterative Refinement for Interacting Formatting Issues
 
 **Note:** First question in this cheat sheet testing Task Statement 3.5 (Iterative refinement), previously flagged as untested.
 
@@ -2254,7 +2333,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q89: @references for One-Off Pattern-Following Tasks vs. CLAUDE.md (⚠️ self-reasoned, no answer key shown)
+## Practice Test 2 — Q89: @references for One-Off Pattern-Following Tasks
 
 **Note:** No "Đúng/Sai" tag was visible on this question's screenshot (only a selected radio button, no color-coded verdict), so this answer is my own reasoning, not a confirmed platform key.
 
@@ -2287,7 +2366,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q90: Selective @imports in CLAUDE.md for Monorepo Shared Standards (answered correctly — confirmed)
+## Practice Test 2 — Q90: Selective @imports in CLAUDE.md for Monorepo Standards
 
 | Situation | Best approach |
 |---|---|
@@ -2319,7 +2398,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q91: Resume Extraction — Guaranteed JSON Schema Compliance (confirms Q72 pattern, ⚠️ self-reasoned, no answer key shown)
+## Practice Test 2 — Q91: Resume Extraction with Guaranteed JSON Schema Compliance
 
 **Note:** Near-duplicate of Q72 (Task Statement 4.3 — Tool use & JSON schemas), same underlying rule, different scenario (extracting candidate information from resumes instead of calendar event details). No "Đúng/Sai" tag was visible on this screenshot (only a selected radio button), so this answer follows from the already-confirmed Q72 rule by reasoning, not a freshly confirmed key.
 
@@ -2338,7 +2417,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q92: Error-Type-Specific, Instructive Tool Error Messages (confirms existing isError pattern — answered correctly)
+## Practice Test 2 — Q92: Error-Type-Specific Instructive Tool Error Messages
 
 **Note:** Near-duplicate/extension of the existing "MCP Tool Error Handling (isError)" rule (Task Statement 2.2) and Anthropic's tool-use documentation guidance ("Write instructive error messages... include what went wrong and what Claude should try next"). Same core lesson, new comparison set of implementation options.
 
@@ -2373,7 +2452,7 @@ Also not yet covered: **2.3** tool distribution, **2.4** MCP server config, **4.
 
 ---
 
-## Practice Test 2 — Q93: Uniform MCP Error Responses, Reworded (exact near-duplicate of Q65 — answered correctly)
+## Practice Test 2 — Q93: Uniform MCP Error Responses
 
 **Note:** Same scenario and same correct answer as Q65 (Task Statement 2.2 — MCP isError / structured error metadata), reworded (`tool_code`/`tool_id` instead of `lookup_order`/order ID, "5 times" instead of "5+ times", JSON error shape `{"status": "error", "content": "{\"type\": \"Error\", \"message\": \"Operation failed.\"}"}`). See Q65 for the full rule table and reasoning — identical lesson: fix uniform/generic error responses with structured metadata (`error_category`, retryability, cause) at the source, not few-shot examples, not a separate `analyze_error` tool, not blanket retry-with-backoff.
 
@@ -3931,3 +4010,1460 @@ Câu hỏi tình huống này trích từ **Scenario 3: Multi-Agent Research Sys
 
 ---
 
+## Practice Test 2 — Q119: Actionability of Batch Review Feedback
+
+
+**Đáp án đúng:**  
+**Whether review feedback arriving up to 24 hours after PR creation remains actionable.** *(Việc phản hồi review xuất hiện muộn tối đa 24 giờ sau khi tạo PR có còn giá trị thực thi/khắc phục hay không)*.
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này thuộc đề cương chính thức của kỳ thi **Claude Certified Architect – Foundations (CCA-f)** [619–620]:
+
+* **Phân vùng kiến thức chính (Primary Domain):** **Domain 4: Prompt Engineering & Structured Output** (Trọng số **20%**) [625–626].
+* **Task Statement:** **Task Statement 4.5: Design efficient batch processing strategies** (Thiết kế chiến lược xử lý lô hiệu quả) [684–686].
+* **Trích dẫn chuẩn từ tài liệu Exam Guide Blueprint:**
+  * *Kiến thức trong Task Statement 4.5:*
+    > *"The Message Batches API: 50% cost savings, up to 24-hour processing window, no guaranteed latency SLA"*.
+    > *"Batch processing is appropriate for non-blocking, latency-tolerant workloads... and inappropriate for blocking workflows"*.
+  * *Kỹ năng trong Task Statement 4.5:*
+    > *"Matching API approach to workflow latency requirements: synchronous API for blocking pre-merge checks, batch API for overnight/weekly analysis"*.
+    > *"custom_id fields for correlating batch request/response pairs"*.
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Đặc tính cốt lõi của Message Batches API:**
+   * **Ưu điểm:** Giảm **50% chi phí API**.
+   * **Ràng buộc hạ tầng:** Cửa sổ trả kết quả xử lý kéo dài **tối đa lên đến 24 giờ** và không có cam kết SLA về độ trễ thời gian thực.
+2. **Quy tắc đánh giá mức độ phù hợp (SLA / Actionability Assessment):**
+   * Dù quy trình review là không chặn (*non-blocking* — lập trình viên được merge code trước và sửa lỗi sau), yếu tố quyết định hàng đầu khi chuyển sang Message Batches API là **tính khả thi của kết quả sau 24 giờ** [684–685, 747].
+   * Nếu việc nhận báo cáo bảo mật sau 24 giờ vẫn giúp lập trình viên mở PR phụ để sửa lỗi (*actionable*), thì Message Batches API hoàn toàn phù hợp. Ngược lại, nếu code đã lên môi trường Production trong vài giờ và việc nhận báo cáo bảo mật muộn 24 giờ gây ra rủi ro lỗ hổng quá lớn, thì batch processing sẽ không thể áp dụng.
+3. **Quy tắc loại trừ cạm bẫy:**
+   * **Thứ tự trả về kết quả (Lựa chọn 3):** Không phải là vấn đề vì Message Batches API sử dụng trường `custom_id` để ghép nối chính xác từng yêu cầu với phản hồi tương ứng, bất kể thứ tự hoàn thành.
+   * **Giảm độ trễ xuống near-instant (Lựa chọn 4):** Sai hoàn toàn vì Batch API làm **tăng độ trễ** (chờ tối đa 24 giờ) chứ không làm giảm độ trễ về mức tức thì.
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng (Lựa chọn 2):** **Whether review feedback arriving up to 24 hours after PR creation remains actionable.**
+  * *Phân tích:* Khớp 100% với nguyên tắc thiết kế hạ tầng của Anthropic. Yếu tố quan trọng nhất quyết định việc áp dụng Message Batches API là kiểm tra xem cửa sổ thời gian trả kết quả lên tới 24 giờ của Batch API có đáp ứng được yêu cầu nghiệp vụ và có đủ thời gian cho lập trình viên xử lý sự cố bảo mật hay không.
+
+* **Lựa chọn 1 (Sai):** *Whether you can structure each review as a single request without multi-turn refinement.*
+  * *Phân tích:* Mặc dù Message Batches API không hỗ trợ các cuộc gọi công cụ đa lượt (*multi-turn tool calls*) trong cùng một request, nhưng đối với tác vụ review CI/CD tự động, việc gửi 1 request đơn lượt (*single request*) là cấu hình tiêu chuẩn [671–673]. Đây không phải là yếu tố tiên quyết hàng đầu quyết định tính phù hợp so với ràng buộc độ trễ 24 giờ.
+
+* **Lựa chọn 3 (Sai):** *Whether your result processing can handle reviews arriving in a different order than submitted.*
+  * *Phân tích:* Chuẩn Message Batches API cung cấp sẵn thuộc tính `custom_id` trên từng request để đối chiếu (*correlate*) kết quả trả về với PR tương ứng. Do đó, việc các lô phản hồi về không theo thứ tự gửi ban đầu đã được hạ tầng giải quyết triệt để và không gây ảnh hưởng đến thiết kế pipeline.
+
+* **Lựa chọn 4 (Sai):** *Whether reducing per-review latency from 30-60 seconds to near-instant matters for your workflow.*
+  * *Phân tích:* Lựa chọn này hiểu sai bản chất công nghệ. Chuyển từ API đồng bộ (*synchronous API*) sang Message Batches API sẽ **kéo dài thời gian nhận kết quả từ 30–60 giây lên tối đa 24 giờ**, chứ không phải làm giảm độ trễ về mức tức thời.
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Message Batches API** | API Xử lý Lô tin nhắn | Phương thức gọi API giúp giảm 50% chi phí, xử lý bất đồng bộ trong cửa sổ tối đa 24 giờ. |
+| **Latency SLA** | Cam kết mức độ trễ | Chỉ số thời gian tối đa để hệ thống phản hồi kết quả (Batch API không cam kết thời gian thực). |
+| **Non-blocking Workflow** | Luồng công việc không chặn | Quy trình xử lý cho phép các bước tiếp theo (như merge PR) diễn ra mà không bắt buộc chờ kết quả. |
+| **`custom_id` Field** | Trường định danh tùy chỉnh | Trường dữ liệu dùng để ghép nối chính xác cặp request/response trong phản hồi lô. |
+| **Actionable Feedback** | Phản hồi có giá trị thực thi | Thông tin phản hồi đến đủ sớm để người nhận có thể thực hiện hành động khắc phục [684–685]. |
+
+---
+
+## Practice Test 2 — Q120: Preserving Critical Facts in Long Conversations
+
+**Đáp án đúng:**  
+**Extract critical structured data (allergies, serving counts, user-defined terms) into a compact reference section, summarize general discussion, and retain recent exchanges verbatim.** *(Trích xuất các dữ liệu có cấu trúc quan trọng (dị ứng, số lượng khẩu phần, thuật ngữ do người dùng định nghĩa) vào một phần tham chiếu nhỏ gọn, tóm tắt phần thảo luận chung, và giữ nguyên vẹn các lượt hội thoại gần đây)*.
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này thuộc đề cương chính thức của kỳ thi **Claude Certified Architect – Foundations (CCA-f)** [619–620]:
+
+* **Phân vùng kiến thức chính (Primary Domain):** **Domain 5: Context Management & Reliability** (Trọng số **15%**).
+* **Task Statement:** **Task Statement 5.1: Manage conversation context to preserve critical information across long interactions**.
+* **Trích dẫn chuẩn từ tài liệu Exam Guide Blueprint:**
+  * *Kiến thức trong Task Statement 5.1:*
+    > *"Progressive summarization risks: condensing numerical values, percentages, dates, and customer-stated expectations into vague summaries"*.
+  * *Kỹ năng trong Task Statement 5.1:*
+    > *"Extracting transactional facts (amounts, dates, order numbers, statuses) into a persistent 'case facts' block included in each prompt, outside summarized history"*.
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Rủi ro của Tóm tắt tăng tiến (Progressive Summarization Risks):** Khi tóm tắt toàn bộ lịch sử hội thoại dài (78,000 tokens), mô hình có xu hướng làm mờ hoặc làm biến mất các thông số kỹ thuật, số lượng, hoặc quy tắc an toàn quan trọng (như *"dị ứng hải sản nghiêm trọng"*, *"8 khẩu phần"*, *"bơ nhiệt độ phòng = 68°F"*) thành các câu khái quát chung chung như *"đã thảo luận về yêu cầu ăn uống và công thức"*.
+2. **Mẫu thiết kế "Khối dữ liệu thực tế / Cửa sổ ngữ cảnh hỗn hợp" (Case Facts / Compact Reference Section):**
+   * **Tầng 1 (Dữ liệu cố định / Case Facts):** Trích xuất các ràng buộc an toàn (dị ứng) và thông số kỹ thuật (8 người, 68°F) vào một khối tham chiếu ngắn gọn cố định ở đầu prompt.
+   * **Tầng 2 (Tóm tắt chung):** Tóm tắt các đoạn thảo luận chung về thời gian và cách trình bày món ăn.
+   * **Tầng 3 (Ngữ cảnh gần nhất):** Giữ nguyên vẹn (*verbatim*) các lượt hội thoại gần nhất để đảm bảo luồng giao tiếp tự nhiên.
+3. **Bác bỏ các giải pháp lãng phí hoặc mất thông tin:**
+   * **Trượt cửa sổ (Sliding Window):** Xóa bỏ các token cũ đồng nghĩa với việc quên sạch thông tin dị ứng hải sản ở đầu phiên làm việc, gây nguy hiểm cho khách dự tiệc.
+   * **Semantic Search / RAG cho Session Context:** Phức tạp hóa hệ thống không cần thiết (*over-engineering*) đối với việc quản lý ngữ cảnh phiên thoại cá nhân.
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng (Lựa chọn 4):** **Extract critical structured data (allergies, serving counts, user-defined terms) into a compact reference section, summarize general discussion, and retain recent exchanges verbatim.**
+  * *Phân tích:* Khớp 100% với kiến trúc chuẩn trong Task Statement 5.1 của Anthropic. Việc tách các thông số cốt lõi vào phần tham chiếu cố định bảo đảm không bao giờ mất thông tin dị ứng hay định nghĩa 68°F, kết hợp tóm tắt các nội dung phụ và giữ nguyên các câu thoại gần nhất giúp tối ưu token mà vẫn duy trì mạch hội thoại hoàn hảo.
+
+* **Lựa chọn 1 (Sai):** *Implement a sliding window retaining only the most recent 20,000 tokens relying on users to re-state important information when relevant.*
+  * *Phân tích:* Cửa sổ trượt (*sliding window*) sẽ cắt bỏ hoàn toàn các thông tin ở đầu phiên thoại. Việc bắt người dùng phải nhắc lại thông tin dị ứng nguy hiểm là phản mẫu kém trong trải nghiệm người dùng.
+
+* **Lựa chọn 2 (Sai):** *Summarize the entire conversation history into a concise summary capturing main topics discussed, then append new messages going forward.*
+  * *Phân tích:* Tóm tắt thuần túy (*pure summarization*) gặp rủi ro "Progressive Summarization Risk": các chi tiết chính xác như "68°F" hay "dị ứng hải sản" dễ bị nén thành câu văn chung chung "đã thảo luận về nguyên liệu và dị ứng", khiến Claude đưa ra các gợi ý sai lầm sau này.
+
+* **Lựa chọn 3 (Sai):** *Store the full conversation externally and use semantic search to retrieve relevant portions for each turn, loading only matching segments into context.*
+  * *Phân tích:* Tìm kiếm ngữ nghĩa (RAG) chỉ phù hợp cho kho tri thức lớn, không phù hợp cho việc quản lý trạng thái phiên làm việc (*session state*). RAG có thể không tìm thấy câu "dị ứng hải sản" nếu lượt thoại tiếp theo người dùng chỉ hỏi "Món tráng miệng làm thế nào?", dẫn đến việc gợi ý món có thành phần nguy hiểm.
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Progressive Summarization Risk** | Rủi ro tóm tắt tăng tiến | Hiện tượng làm mất các thông số, ngày tháng, con số cụ thể khi nén văn bản thành bản tóm tắt. |
+| **Case Facts Block** | Khối dữ liệu thực tế cố định | Khối dữ liệu có cấu trúc lưu trữ các thông số cốt lõi (ID, dị ứng, thông số) đặt ngoài phần tóm tắt. |
+| **Sliding Window** | Cửa sổ trượt | Kỹ thuật giữ lại N token gần nhất và xóa các token cũ hơn (dễ gây mất ngữ cảnh ban đầu). |
+| **Retain Verbatim** | Giữ nguyên vẹn | Việc giữ nguyên từng từ của các lượt thoại gần nhất để bảo toàn mạch giao tiếp tự nhiên. |
+| **Context Window Optimization** | Tối ưu cửa sổ ngữ cảnh | Chuỗi kỹ thuật giúp giảm token tiêu tốn nhưng vẫn giữ lại đầy đủ thông tin quan trọng. |
+
+---
+## Practice Test 2 — Q121: Structured Tool Responses for User Confirmation
+
+**Đáp án đúng:**  
+**Return structured data including cost estimate, target project, resource specifications, and impact summary in the tool response** *(Trả về dữ liệu có cấu trúc bao gồm ước tính chi phí, dự án đích, thông số kỹ thuật tài nguyên và tóm tắt ảnh hưởng trong phản hồi của công cụ)*.
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này thuộc đề cương chính thức của kỳ thi **Claude Certified Architect – Foundations (CCA-f)** [619–620]:
+
+* **Phân vùng kiến thức chính (Primary Domains):**
+  * **Domain 2: Tool Design & MCP Integration** (Trọng số **18%**) [625–626].
+  * **Domain 5: Context Management & Reliability** (Trọng số **15%**) [625–626].
+* **Task Statements liên quan:**
+  * **Task Statement 2.1: Design effective tool interfaces with clear descriptions and boundaries** [647–650].
+  * **Task Statement 5.1: Manage conversation context to preserve critical information across long interactions** [688–691].
+* **Trích dẫn chuẩn từ tài liệu Exam Guide Blueprint:**
+  * *Kiến thức & Kỹ năng trong Task Statement 5.1 & 2.1:*
+    > *"Modifying upstream tools to return structured data (key facts, metadata, impact summaries) instead of verbose content or simple acknowledgment messages so downstream agents can present context clearly"*.
+    > *"Using structured data formats to separate content from metadata... to enable accurate downstream processing and user confirmation"*.
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Nhận diện nguyên nhân gốc rễ (Root Cause Analysis):**  
+   Người dùng thường xuyên phê duyệt việc cấp phát tài nguyên rồi ngay lập tức hỏi *"Tốn bao nhiêu tiền?"* hoặc *"Cấp cho dự án nào?"*. Điều này chứng tỏ **tác tử không hiển thị đủ thông tin ngữ cảnh quan trọng cho người dùng trước/khi xác nhận**. Nguyên nhân là công cụ chỉ trả về một thông báo ghi nhận đơn giản (*simple acknowledgment message*), khiến Agent thiếu dữ liệu có cấu trúc để trình bày minh bạch cho người dùng.
+2. **Quy tắc "Thiết kế phản hồi công cụ bằng Dữ liệu có cấu trúc" (Structured Tool Response Pattern):**  
+   Cung cấp phản hồi dưới dạng **Dữ liệu có cấu trúc (*Structured Data*)** chứa đầy đủ các thuộc tính quan trọng (`cost_estimate`, `target_project`, `resource_specifications`, `impact_summary`) giúp Agent có ngay siêu dữ liệu chính xác. Nhờ đó, Agent có thể tóm tắt và hiển thị toàn bộ chi tiết tác động cho người dùng xem trước khi họ đưa ra quyết định phê duyệt.
+3. **Quy tắc loại trừ các phản mẫu (Anti-Patterns):**
+   * **Bắt buộc cờ `user_acknowledged: boolean` (Lựa chọn 1):** Phụ thuộc vào hướng dẫn prompt mang tính xác suất (*probabilistic prompt compliance*), nhưng không giải quyết được vấn đề thiếu thông tin chi tiết từ phản hồi của công cụ [639–642].
+   * **Thêm tham số `detail_level` (Lựa chọn 3):** Đẩy trách nhiệm lựa chọn sang cho Agent, nhưng nếu bản thân dữ liệu trả về của công cụ ở phía backend không chứa các trường siêu dữ liệu có cấu trúc thì Agent vẫn không có thông tin để hiển thị.
+   * **Trễ 60 giây (*60-second hold* - Lựa chọn 4):** Tạo ra ma sát thời gian chờ không cần thiết (*workflow friction*) mà vẫn không cung cấp được các con số chi tiết về chi phí hay tên dự án cho người dùng [687–688].
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng (Lựa chọn 2):** **Return structured data including cost estimate, target project, resource specifications, and impact summary in the tool response**
+  * *Phân tích:* Khớp 100% với nguyên tắc thiết kế giao diện công cụ và quản lý ngữ cảnh của Anthropic [638, 647–650, 691]. Việc nâng cấp phản hồi của công cụ từ chuỗi chữ ghi nhận đơn thuần thành một đối tượng JSON có cấu trúc chứa chi phí, dự án đích và thông số kỹ thuật giúp Agent nắm trọn vẹn ngữ cảnh. Từ đó, Agent có thể trình bày đầy đủ tác động cho người dùng hiểu rõ trước khi họ bấm phê duyệt.
+
+* **Lựa chọn 1 (Sai):** *Add a `user_acknowledged: boolean` parameter that must be set true, with instructions for the agent to only set it after the user explicitly confirms they reviewed the details*
+  * *Phân tích:* Lựa chọn này dựa vào chỉ dẫn prompt tự nhiên để ép Agent đặt cờ `true` sau khi hỏi người dùng. Tuy nhiên, nếu bản thân công cụ không trả về dữ liệu chi tiết về chi phí hay dự án, Agent sẽ không có thông tin chính xác để cung cấp cho người dùng xem xét [639–642].
+
+* **Lựa chọn 3 (Sai):** *Add a `detail_level` parameter with options "minimal" or "comprehensive" that controls how much context the agent presents in confirmations*
+  * *Phân tích:* Việc thêm tham số điều khiển mức độ chi tiết `detail_level` làm tăng thêm độ phức tạp khi gọi công cụ. Nếu phản hồi gốc của công cụ ở phía backend không được tái cấu trúc để chứa siêu dữ liệu thì việc chọn "comprehensive" vẫn không giải quyết được bài toán thiếu thông tin chi phí và dự án [647–650].
+
+* **Lựa chọn 4 (Sai):** *Implement a 60-second hold before execution completes, allowing users time to review pending allocations and cancel if needed*
+  * *Phân tích:* Tạm dừng 60 giây chỉ kéo dài thời gian thực thi của hệ thống chứ không cung cấp thêm bất kỳ thông tin minh bạch nào về chi phí hay dự án đích. Người dùng vẫn sẽ không hiểu họ đang phê duyệt cái gì trong 60 giây chờ đó [687–688].
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Structured Tool Response** | Phản hồi công cụ có cấu trúc | Định dạng phản hồi chứa các cặp key-value minh bạch (chi phí, thuộc tính, dự án) thay vì câu văn tự nhiên. |
+| **Impact Summary** | Tóm tắt mức độ ảnh hưởng | Khối dữ liệu mô tả các thay đổi hoặc nguồn lực sẽ bị tiêu tốn khi thực hiện hành động. |
+| **Cost Estimate Metadata** | Siêu dữ liệu ước tính chi phí | Thông tin chi phí dự kiến đi kèm phản hồi công cụ để phục vụ bước xác nhận của người dùng. |
+| **Exploratory Tool Response** | Phản hồi công cụ sơ khai | Các phản hồi dạng chuỗi ghi nhận đơn giản ("Success", "OK") gây thiếu ngữ cảnh cho các bước sau [689–691]. |
+| **User Confirmation Workflow** | Quy trình xác nhận của người dùng | Luồng tương tác trong đó Agent phải hiển thị đầy đủ thông số trước khi người dùng ra quyết định. |
+
+---
+
+
+## Practice Test 2 — Q122: Cursor-Based Pagination for Tool Results
+
+**Đáp án đúng:**  
+**Return the first page with total match count and cursor for additional pages.** *(Trả về trang đầu tiên cùng với tổng số lượng kết quả khớp (total match count) và con trỏ (cursor) để lấy các trang tiếp theo)*.
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+* **Phân vùng kiến thức chính (Primary Domains):**
+  * **Domain 2: Tool Design & MCP Integration** (Trọng số **18%**).
+  * **Domain 5: Context Management & Reliability** (Trọng số **15%**).
+* **Task Statements liên quan:**
+  * **Task Statement 2.1: Design effective tool interfaces with clear descriptions and boundaries** [647–650].
+  * **Task Statement 5.1: Manage conversation context to preserve critical information across long interactions** [688–691].
+* **Trích dẫn chuẩn từ tài liệu Exam Guide Blueprint:**
+  * *Kiến thức & Kỹ năng trong Task Statement 5.1 & 2.1:*
+    > *"Trimming verbose tool outputs and returning structured data with clear identifiers and metadata (such as page counts or cursors) to prevent context window bloat and reduce unnecessary tool execution latency"* [688–691].
+    > *"Exposing metadata and content catalogs in structured responses so downstream agents can make informed tool call decisions without over-fetching"* [655–657, 691].
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Nhận diện sự cố "Tự động nạp toàn bộ dữ liệu" (Auto-fetching All Pages Anti-Pattern):**
+   * Khi công cụ tự động quét và tải toàn bộ 200+ sản phẩm qua nhiều trang ở backend, nó sẽ gây ra hai tác hại lớn:
+     1. **Độ trễ cao (Latency):** Kéo dài từ 15–20 giây cho mỗi đợt gọi API.
+     2. **Phình to ngữ cảnh (Context Window Bloat):** Làm tràn hàng trăm sản phẩm vào cửa sổ ngữ cảnh, trong khi tác tử có thể chỉ cần xem 3–5 sản phẩm đầu tiên [688–689].
+2. **Mẫu thiết kế Phân trang chuẩn Cursor (Cursor-based Pagination Pattern):**
+   * Thiết kế công cụ chuẩn theo giao diện MCP/REST là **chỉ trả về trang đầu tiên** (50 items) đi kèm siêu dữ liệu có cấu trúc:
+     * `total_count`: Tổng số lượng sản phẩm tìm thấy (giúp tác tử nắm toàn cảnh).
+     * `next_cursor`: Con trỏ đánh dấu vị trí để lấy trang kế tiếp.
+   * Nếu thông tin ở trang 1 đã đủ, tác tử dừng lại (tiết kiệm 15s và hàng ngàn token). Nếu cần thêm, tác tử sẽ truyền tham số `cursor` vào lại chính công cụ `search_products(query=..., cursor=...)` [648–650, 691].
+3. **Bác bỏ các giải pháp không tối ưu:**
+   * **Cắt cứng Top 50 (Lựa chọn 2):** Khiến tác tử mất hoàn toàn khả năng xem các sản phẩm ở trang sau và không biết có bao nhiêu kết quả tổng cộng trong cơ sở dữ liệu.
+   * **Tự động tải `max_pages=2` (Lựa chọn 3):** Vẫn ngầm định tải trước 100 items ở backend, duy trì độ trễ không cần thiết.
+   * **Tách thành 2 công cụ riêng biệt (Lựa chọn 4):** Việc tạo thêm công cụ `fetch_more_results` làm phình mảng `tools` khả dụng, gây gia tăng độ phức tạp quyết định (*Decision Complexity*) cho LLM [652–653].
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng (Lựa chọn 1):** **Return the first page with total match count and cursor for additional pages.**
+  * *Phân tích:* Khớp 100% với kiến trúc chuẩn của Anthropic [648–650, 688–691]. Trả về trang đầu tiên kèm `total_match_count` và `cursor` giúp giảm độ trễ từ 15–20s xuống dưới 1s, ngăn ngừa tràn token ngữ cảnh, đồng thời cho phép tác tử chủ động phân trang khi thực sự có nhu cầu.
+
+* **Lựa chọn 2 (Sai):** *Implement server-side relevance ranking and return only the top 50 most relevant items.*
+  * *Phân tích:* Mặc dù xếp hạng độ liên quan là tốt, nhưng việc chặn hoàn toàn khả năng xem các trang sau và giấu đi tổng số lượng sản phẩm thực tế sẽ làm giảm tính linh hoạt của tác tử khi người dùng muốn duyệt qua danh mục rộng hơn.
+
+* **Lựa chọn 3 (Sai):** *Add a max pages parameter (default: 2) that controls how many pages are fetched internally.*
+  * *Phân tích:* Việc duy trì cơ chế tự động tải ngầm nhiều trang (2 trang = 100 items) ở backend vẫn làm tăng gấp đôi độ trễ không cần thiết nếu thông tin tác tử tìm kiếm đã xuất hiện ngay ở 10 sản phẩm đầu tiên [688–689].
+
+* **Lựa chọn 4 (Sai):** *Create separate search products and fetch more results tools for pagination.*
+  * *Phân tích:* Việc tách thành 2 công cụ riêng biệt làm tăng số lượng công cụ khả dụng trong danh sách của tác tử, vi phạm nguyên tắc giữ danh sách công cụ gọn nhẹ (4–5 tools) để tránh giảm độ chính xác lựa chọn công cụ [652–653].
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Cursor-based Pagination** | Phân trang dựa trên con trỏ | Kỹ thuật dùng chuỗi `cursor` để đánh dấu vị trí trang dữ liệu tiếp theo trong phản hồi có cấu trúc. |
+| **Context Window Bloat** | Phình to cửa sổ ngữ cảnh | Hiện tượng nạp quá nhiều dữ liệu thô vào ngữ cảnh làm lãng phí token và giảm độ tập trung của LLM [688–689]. |
+| **Total Match Count** | Tổng số kết quả khớp | Siêu dữ liệu trả về cho tác tử biết quy mô tổng thể của kết quả truy vấn. |
+| **Decision Complexity** | Độ phức tạp quyết định | Mức độ quá tải nhận thức của LLM khi mảng công cụ khả dụng chứa quá nhiều công cụ trùng lặp hoặc tách quá nhỏ [652–653]. |
+
+---
+
+
+## Practice Test 2 — Q123: JSON-RPC Errors vs. MCP Tool Execution Errors
+
+
+**Đáp án đúng:**  
+**Report error 1 as a JSON-RPC protocol error, report errors 2 and 3 as tool results with `isError: true`** *(Báo cáo lỗi 1 dưới dạng lỗi giao thức JSON-RPC; báo cáo lỗi 2 và 3 dưới dạng kết quả công cụ (tool result) đi kèm `isError: true`)* [650–652, 763–764].
+
+---
+
+### **1. Phân tích theo Chuẩn thiết kế MCP (Model Context Protocol Specification)**
+
+Trong chuẩn kiến thức của Anthropic về **Model Context Protocol (MCP)**, cơ chế xử lý lỗi được phân định ranh giới rõ ràng giữa **Lỗi tầng giao thức (Protocol Errors)** và **Lỗi tầng thực thi công cụ (Tool Execution Errors)** [650–652, 763–764]:
+
+* **Lỗi 1 (Yêu cầu sai cú pháp, thiếu tham số bắt buộc `user_email`):**
+  * **Loại lỗi:** **JSON-RPC Protocol Error** (Mã lỗi chuẩn JSON-RPC `-32602 Invalid params` hoặc `-32600 Invalid Request`).
+  * **Giải thích:** Khi yêu cầu gọi công cụ (`tools/call`) không vượt qua được bước xác thực Schema đầu vào ở tầng hạ tầng giao thức (ví dụ: thiếu thuộc tính `required`), server MCP sẽ từ chối cuộc gọi và trả về một phản hồi lỗi trực tiếp ở tầng RPC trước khi mã nguồn của công cụ được thực thi.
+* **Lỗi 2 (Calendar API trả về lỗi 404 - Người dùng không tồn tại):**
+  * **Loại lỗi:** **Tool Result với `isError: true`** [650–652].
+  * **Giải thích:** Đây là lỗi logic nghiệp vụ (*domain/execution error*) xảy ra trong quá trình công cụ đang chạy. Công cụ vẫn hoàn thành đợt thực thi RPC và trả về một đối tượng `CallToolResult` hợp lệ chứa nội dung mô tả lỗi kèm cờ `isError: true` để LLM (Agent) có thể "đọc" và nhận biết người dùng không tồn tại.
+* **Lỗi 3 (Calendar API trả về lỗi 503 - Dịch vụ tạm thời không khả dụng):**
+  * **Loại lỗi:** **Tool Result với `isError: true`** [650–652].
+  * **Giải thích:** Đây là lỗi hạ tầng mạng/dịch vụ ngoài tạm thời (*transient error*) phát sinh trong lúc công cụ thực thi. Việc trả về `isError: true` kèm siêu dữ liệu cấu trúc (như `isRetryable: true`) giúp Agent hiểu rằng đây là lỗi mạng ngắn hạn và đưa ra quyết định thử lại (*retry*) hoặc báo lên hệ thống điều phối [650–652, 694–696].
+
+---
+
+### **2. Tips ghi nhớ cho kỳ thi CCA-f (Decision Rules & Exam Tips)**
+
+1. **Ranh giới Phân loại Lỗi trong MCP Server:**
+   * **JSON-RPC Error:** Chỉ dùng khi đợt gọi API vi phạm định dạng chuẩn JSON-RPC hoặc không khớp với JSON Schema của công cụ [763–765]. Khi trả về lỗi này, LLM không nhận được nội dung trả về từ ToolResult.
+   * **Tool Result (`isError: true`):** Dùng cho **tất cả các ngoại lệ/lỗi phát sinh khi công cụ đang chạy** (bao gồm cả lỗi 400, 404, 500, 503 từ API bên ngoài) [650–652]. Cơ chế này cho phép nạp thông báo lỗi vào ngữ cảnh thoại để LLM đưa ra phương án xử lý thông minh.
+2. **Quy tắc loại trừ cạm bẫy:**
+   * **Báo cáo tất cả là `isError: true` (Đáp án 2):** Sai vì yêu cầu thiếu tham số cấu trúc làm hỏng đợt gọi RPC ngay từ tầng hạ tầng protocol.
+   * **Báo cáo tất cả là JSON-RPC (Đáp án 3):** Sai vì nếu dùng lỗi JSON-RPC cho các lỗi 404/503 của API bên ngoài, Agent sẽ mất đi khả năng nhận kết quả có cấu trúc để tự khôi phục sau lỗi.
+
+---
+
+### **3. Bảng tổng hợp quy tắc xử lý lỗi MCP (Glossary for Study Note)**
+
+| Tình huống lỗi | Tầng xử lý | Định dạng phản hồi chuẩn MCP | Hành vi của Agent (LLM) |
+| :--- | :--- | :--- | :--- |
+| **Sai tham số / Thiếu Schema** | Tầng Giao thức (RPC) | `JSON-RPC Error (-32602)` | Hạ tầng báo lỗi, không chạy mã nguồn công cụ. |
+| **Không tìm thấy dữ liệu (404)** | Tầng Thực thi Công cụ | `CallToolResult` (`isError: true`) | Agent đọc được lỗi và báo lại người dùng. [650–652] |
+| **Dịch vụ mạng gián đoạn (503)** | Tầng Thực thi Công cụ | `CallToolResult` (`isError: true`, `isRetryable: true`) | Agent nhận diện lỗi tạm thời và thực hiện retry. |
+
+---
+
+## Practice Test 2 — Q124: Focused Multi-Pass Reviews by Concern
+
+
+**Đáp án đúng:**  
+**Split the review into separate focused prompts - one for security and API design, another for business logic - each with dedicated examples, then combine findings before posting.** *(Chia quy trình review thành các prompt tập trung riêng biệt — một prompt cho bảo mật và thiết kế API, một prompt khác cho logic nghiệp vụ — mỗi prompt đi kèm các ví dụ chuyên biệt, sau đó hợp nhất các phát hiện trước khi đăng)*.
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này thuộc đề cương chính thức của kỳ thi **Claude Certified Architect – Foundations (CCA-f)**:
+
+* **Phân vùng kiến thức chính (Primary Domains):**
+  * **Domain 4: Prompt Engineering & Structured Output** (Trọng số **20%**).
+  * **Domain 1: Agentic Architecture & Orchestration** (Trọng số **27%**).
+* **Task Statements liên quan:**
+  * **Task Statement 4.6: Design multi-instance and multi-pass review architectures** *(Thiết kế kiến trúc review đa phiên và đa lượt)*.
+  * **Task Statement 1.6: Design task decomposition strategies for complex workflows** *(Thiết kế chiến lược phân rã tác vụ cho quy trình phức tạp)*.
+* **Trích dẫn chuẩn từ Exam Guide Blueprint:**
+  * *Kiến thức & Kỹ năng trong Task Statement 4.6 & 1.6:*
+    > *"Designing multi-pass review architectures where distinct prompts evaluate specific concerns (e.g., security/API design vs. business logic) independently to prevent attention dilution and prompt instruction interference"*.
+    > *"Combining findings from parallel/independent review passes before producing the final review summary"*.
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Nhận diện sự cố "Phân tán sự chú ý & Xung đột mục tiêu trong một Prompt" (Prompt Interference / Attention Dilution):**
+   * Khi dồn quá nhiều mục tiêu review khác nhau (bảo mật, thiết kế API, logic nghiệp vụ) vào cùng một prompt duy nhất, mô hình sẽ gặp hiện tượng đánh đổi độ bao phủ (*recall trade-off*): việc thêm ví dụ/chỉ dẫn cho mục tiêu này làm sụt giảm độ nhạy phát hiện của mục tiêu khác.
+2. **Mẫu kiến trúc "Rà soát đa lượt / Phân rã tác vụ" (Multi-Pass Review Architecture):**
+   * Giải pháp chuẩn của Anthropic là **tách quy trình thành các lượt review độc lập (multi-pass review)**. Mỗi lượt sử dụng một prompt chuyên biệt kèm ví dụ few-shot riêng cho từng nhóm vấn đề (Lượt 1: Security + API Design; Lượt 2: Business Logic). Sau đó, hệ thống hợp nhất (*combine/aggregate*) kết quả từ các lượt trước khi đăng báo cáo.
+3. **Quy tắc loại trừ các cạm bẫy thiết kế (Anti-Patterns):**
+   * **Nâng cấp Tier mô hình (Lựa chọn 1):** Nâng cấp mô hình không giải quyết được xung đột chỉ dẫn/phân tán sự chú ý khi ôm đồm quá nhiều mục tiêu trong một prompt đơn lẻ.
+   * **Thay ví dụ bằng Danh mục kiểm tra dài (Lựa chọn 2):** Nhồi nhét checklist chi tiết vẫn diễn ra trong cùng một prompt, không loại bỏ được hiện tượng trôi chú ý và xung đột recall.
+   * **Nạp toàn bộ Repository (Lựa chọn 3):** Làm phình to cửa sổ ngữ cảnh (*context window bloat*), gia tăng nhiễu và khiến mô hình càng dễ bỏ sót chi tiết.
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng (Lựa chọn 4):** **Split the review into separate focused prompts - one for security and API design, another for business logic - each with dedicated examples, then combine findings before posting.**
+  * *Phân tích:* Khớp 100% với kiến trúc Multi-Pass Review của Anthropic. Việc phân rã tác vụ thành các prompt riêng biệt giúp mỗi đợt gọi API tập trung tối đa sự chú ý vào một nhóm tiêu chí cụ thể mà không bị nhiễu bởi các tiêu chí khác, loại bỏ triệt tiêu sự đánh đổi recall và nâng cao chất lượng phát hiện lỗi ở cả hai mảng.
+
+* **Lựa chọn 1 (Sai):** *Upgrade to a more capable model tier, since its stronger reasoning will handle both concern types in a single prompt and eliminate the recall trade-off.*
+  * *Phân tích:* Đây là cạm bẫy "phụ thuộc vào mô hình" (*capability trap*). Việc cố nhồi nhét nhiều mục tiêu đối lặp vào một prompt vẫn sẽ gây ra hiện tượng suy giảm sự tập trung (*attention dilution*), bất kể mô hình có dung lượng hay khả năng tư duy cao đến đâu.
+
+* **Lựa chọn 2 (Sai):** *Replace the few-shot examples with a detailed checklist of specific logic edge cases to verify, such as division-by-zero in score calculation or grading thresholds.*
+  * *Phân tích:* Thay thế ví dụ bằng checklist dài dòng không giải quyết được nguyên nhân gốc rễ là sự quá tải tiêu chí trong một lượt gọi. Mô hình vẫn phải phân tán sự chú ý giữa quy tắc API, bảo mật và hàng loạt danh mục kiểm tra logic.
+
+* **Lựa chọn 3 (Sai):** *Provide the full repository as context instead of just the changed files and surrounding code, giving the model deeper visibility into business logic.*
+  * *Phân tích:* Nạp toàn bộ kho mã nguồn (*full repository*) sẽ làm tràn ngữ cảnh (*context bloat*), gây lãng phí token và làm trầm trọng hơn hiện tượng bỏ sót thông tin ở cuối hoặc giữa prompt (*lost in the middle*).
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Multi-Pass Review Architecture** | Kiến trúc rà soát đa lượt | Kỹ thuật chia quy trình review thành nhiều đợt gọi API với các prompt chuyên biệt cho từng khía cạnh. |
+| **Attention Dilution** | Phân tán sự chú ý | Hiện tượng LLM giảm độ sâu và độ chính xác khi phải xử lý quá nhiều mục tiêu/yêu cầu cùng lúc trong 1 prompt. |
+| **Recall Trade-off** | Sự đánh đổi độ bao phủ | Tình huống tăng khả năng phát hiện loại lỗi này làm giảm tỷ lệ phát hiện loại lỗi khác do xung đột chỉ dẫn. |
+| **Task Decomposition** | Phân rã tác vụ | Phương pháp chia một công việc phức tạp thành các sub-task nhỏ hơn để xử lý độc lập. |
+| **Finding Aggregation / Combination** | Hợp nhất phát hiện | Bước tổng hợp các mảng kết quả lỗi từ nhiều lượt review riêng biệt trước khi trả về báo cáo cuối cùng. |
+
+---
+
+## Practice Test 2 — Q125: Explicit Context Passing to a Synthesis Subagent
+
+
+**Đáp án đúng:**  
+**Include the complete findings from both subagents directly in the synthesis subagent's prompt** *(Đưa trực tiếp toàn bộ kết quả phát hiện được từ cả hai subagent vào prompt của subagent tổng hợp)*.
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này thuộc kịch bản chuẩn về **Kiến trúc Điều phối Tác tử (Agentic Orchestration)** trong đề cương kỳ thi **Claude Certified Architect – Foundations (CCA-f)**:
+
+* **Phân vùng kiến thức chính (Primary Domain):** **Domain 1: Agentic Architecture & Orchestration** (Trọng số **27%**).
+* **Task Statements liên quan:**
+  * **Task Statement 1.2:** Orchestrate multi-agent systems with coordinator-subagent patterns.
+  * **Task Statement 1.3:** Configure subagent invocation, context passing, and spawning.
+* **Trích dẫn chuẩn từ tài liệu Exam Guide Blueprint:**
+  * *Kiến thức trong Task Statement 1.2 & 1.3:*
+    > *"Subagents have isolated context. They do not automatically inherit parent context or share memory between invocations"*.
+    > *"Hub-and-spoke architecture where a coordinator agent manages all inter-subagent communication, error handling, and information routing"*.
+  * *Kỹ năng trong Task Statement 1.3:*
+    > *"Subagent context must be explicitly provided in the prompt—including complete findings from prior agents directly in the subagent's prompt"*.
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Nguyên tắc "Ngữ cảnh Cô lập của Subagent" (Isolated Context Rule):**  
+   Trong Claude Agent SDK, các subagent vận hành với **cửa sổ ngữ cảnh hoàn toàn độc lập (*isolated context*)**. Chúng **KHÔNG** tự động thừa hưởng lịch sử hội thoại của tác tử điều phối (*coordinator*), cũng **KHÔNG** dùng chung bộ nhớ (*shared memory*) với các subagent khác.
+2. **Luồng luân chuyển thông tin chuẩn Hub-and-Spoke:**  
+   Mọi sự giao tiếp và truyền nạp dữ liệu giữa các subagent **bắt buộc phải đi qua tác tử điều phối (Coordinator)**. Con đường duy nhất để đưa thông tin/kết quả từ Subagent A sang Subagent B là:  
+   \\[\text{Subagent A} \xrightarrow{\text{kết quả}} \text{Coordinator} \xrightarrow{\text{trích xuất \& đưa vào prompt}} \text{Subagent B}\\].
+3. **Quy tắc loại trừ cạm bẫy:**
+   * **Thừa hưởng ngữ cảnh tự động (Automatic Context Inheritance):** Đây là một bẫy khái niệm phổ biến. Nếu không đưa kết quả vào prompt khi gọi subagent, subagent sẽ báo lỗi *"Không nhận được dữ liệu nghiên cứu nào"*.
+   * **Bộ nhớ dùng chung / Shared Memory Store:** Phản mẫu này vi phạm mô hình giao tiếp tập trung của Hub-and-Spoke.
+   * **Gọi ngược Callback / Subagent tự gọi nhau:** Các subagent không gọi trực tiếp lẫn nhau để lấy dữ liệu; mọi luồng điều khiển đều do Coordinator nắm giữ.
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng (Lựa chọn 4):** **Include the complete findings from both subagents directly in the synthesis subagent's prompt**
+  * *Phân tích:* Khớp 100% với nguyên tắc thiết kế hạ tầng của Anthropic. Vì subagent tổng hợp (*synthesis subagent*) không có sẵn lịch sử làm việc của hai subagent trước, Coordinator bắt buộc phải thu thập toàn bộ dữ liệu phát hiện và chèn trực tiếp vào prompt khởi tạo khi sinh ra (*spawn*) subagent tổng hợp qua công cụ `Task`.
+
+* **Lựa chọn 1 (Sai):** *Provide the subagent with tool definitions that allow it to request outputs from other subagents via callbacks*
+  * *Phân tích:* Subagent không thực hiện các cuộc gọi ngược (*callbacks*) hoặc tự truy vấn lịch sử hội thoại của subagent khác. Việc này làm phức tạp hóa hệ thống và phá hỏng vai trò kiểm soát thông tin tập trung của Coordinator.
+
+* **Lựa chọn 2 (Sai):** *Spawn the subagent with only a brief task description, relying on automatic context inheritance from the coordinator*
+  * *Phân tích:* Subagent **không tự động thừa hưởng ngữ cảnh (*does NOT automatically inherit context*)** từ tác tử cha. Nếu chỉ cung cấp một mô tả tác vụ ngắn gọn mà không kèm kết quả nghiên cứu, subagent tổng hợp sẽ không có dữ liệu để làm việc.
+
+* **Lựa chọn 3 (Sai):** *Pass reference identifiers and configure the subagent with read access to a shared memory store where other subagents deposited their results*
+  * *Phân tích:* Việc sử dụng bộ nhớ dùng chung (*shared memory store*) hoặc kho lưu trữ trạng thái ẩn không nằm trong mẫu thiết kế chuẩn của Claude Agent SDK. Ranh giới ngữ cảnh của subagent là tuyệt đối cô lập, và mọi dữ liệu cần thiết đều được truyền minh bạch qua prompt.
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Isolated Context** | Ngữ cảnh cô lập | Cơ chế trong đó mỗi subagent có một cửa sổ ngữ cảnh riêng biệt, không đọc được lịch sử của agent khác. |
+| **Hub-and-Spoke Architecture** | Kiến trúc Mô-đun Trục & Nan hoa | Mô hình điều phối trong đó Coordinator làm trung tâm quản lý toàn bộ luồng giao tiếp và dữ liệu giữa các subagent. |
+| **Context Passing via Prompt** | Truyền ngữ cảnh qua Prompt | Phương pháp duy nhất để cung cấp thông tin đầu vào cho subagent bằng cách chèn dữ liệu vào prompt khởi tạo. |
+| **Automatic Context Inheritance** | Bẫy thừa hưởng ngữ cảnh tự động | Quan niệm sai lầm cho rằng subagent con tự động thấy được những gì tác tử cha (Coordinator) đã biết. |
+| **Synthesis Subagent** | Subagent tổng hợp | Tác tử chuyên biệt nhận các kết quả trích xuất/tìm kiếm từ nhiều nguồn để phân tích và viết báo cáo hợp nhất. |
+
+---
+
+## Practice Test 2 — Q126: Grep for Import Statements Across the Codebase
+
+**Đáp án đúng:**  
+**Grep, to search for the import statement pattern across file contents** *(Sử dụng Grep để tìm kiếm mẫu câu lệnh import `@company/auth` bên trong nội dung các tệp)*.
+
+---
+
+### **1. Phân tích theo Chuẩn kiến thức Claude Certified Architect (Exam Blueprint)**
+
+* **Phân định chức năng công cụ cốt lõi (Content Search vs. Path Search):**
+  * **Grep (Content Search):** Công cụ chuyên biệt dùng để **tìm kiếm chuỗi văn bản/nội dung bên trong tệp** (code content) như câu lệnh `import`, `require`, tên hàm, hay các từ khóa.
+  * **Glob (Path Search):** Công cụ chỉ dùng để tìm kiếm **tên tệp hoặc cấu trúc đường dẫn** theo mẫu pattern (ví dụ: `**/*.ts`, `src/auth/*`), hoàn toàn không đọc hay tìm kiếm nội dung bên trong tệp.
+
+* **Bản chất của yêu cầu:**  
+  Kỹ sư muốn tìm tất cả các tệp có **sử dụng/import package `@company/auth`**. Đây là tác vụ **tìm kiếm mẫu chuỗi văn bản (`import ... from '@company/auth'`) nằm trong nội dung mã nguồn**, nên **Grep** là công cụ phù hợp nhất.
+
+---
+
+### **2. Phân tích lý do loại trừ các đáp án còn lại**
+
+* **Bash (`find . -type d -name "auth"`) - Sai:**  
+  * Lệnh `find` trong tùy chọn này chỉ đi tìm các **thư mục (`-type d`)** có tên là "auth", hoàn toàn không tìm được các tệp `.js/.ts` có câu lệnh `import @company/auth`.
+  * Ngoài ra, quy tắc đề thi của Anthropic chỉ rõ: Việc lạm dụng lệnh `Bash` khi đã có sẵn công cụ built-in chuyên biệt (như `Grep`) là một **phản mẫu (anti-pattern)**.
+
+* **Read (bắt đầu từ `package.json`) - Sai:**  
+  * Tệp `package.json` chỉ khai báo mối phụ thuộc ở cấp độ dự án/module, không thể chỉ ra chính xác tệp nguồn nào trong monorepo đang thực sự `import` package đó. 
+  * Mở và đọc thủ công từng tệp bằng `Read` sẽ làm **cạn kiệt cửa sổ ngữ cảnh (context window bloat)** và gây lãng phí lớn chi phí token.
+
+* **Glob (tìm tệp có chữ "auth" trong tên/đường dẫn) - Sai:**  
+  * Glob chỉ quét theo tên tệp (filename/path). Một tệp có tên `userService.ts` hoặc `checkout.ts` hoàn toàn có thể import `@company/auth` nhưng tên tệp lại không chứa chữ "auth", dẫn đến việc `Glob` bỏ sót rất nhiều tệp quan trọng.
+
+---
+
+### **3. Bảng tóm tắt quy tắc chọn công cụ tìm kiếm trong Codebase**
+
+| Nhu cầu tìm kiếm | Công cụ đúng | Lý do chuẩn Anthropic |
+| :--- | :--- | :--- |
+| **Nội dung bên trong tệp** (import, hàm, chuỗi lỗi, từ khóa) | **Grep** | Tìm kiếm nội dung văn bản nhanh, chính xác, tiết kiệm ngữ cảnh. |
+| **Tên tệp / Đường dẫn tệp** (extension, cấu trúc thư mục) | **Glob** | Tìm kiếm theo đuôi tệp hoặc mẫu đường dẫn wildcard. |
+| **Đọc hiểu chi tiết logic** một tệp cụ thể | **Read** | Dùng sau khi đã khoanh vùng tệp bằng Grep/Glob. |
+
+---
+
+## Practice Test 2 — Q127: Disambiguating Deletion Targets with Single-Click Confirmation
+
+
+**Đáp án đúng:**  
+**Present matched records with differentiating fields and require single-click confirmation of the intended target before executing deletion.** *(Hiển thị danh sách các bản ghi khớp kèm theo các trường phân biệt và yêu cầu xác nhận một cú nhấp chuột đối với đối tượng mục tiêu trước khi thực thi việc xóa)*.
+
+---
+
+### **1. Phân tích so với tài liệu chính thức (Exam Guide & Blueprint Analysis)**
+
+Câu hỏi tình huống này thuộc đề cương chính thức của kỳ thi **Claude Certified Architect – Foundations (CCA-f)**:
+
+* **Phân vùng kiến thức chính (Primary Domains):**
+  * **Domain 2: Tool Design & MCP Integration** (Trọng số **18%**).
+  * **Domain 1: Agentic Architecture & Orchestration** (Trọng số **27%**).
+* **Task Statements liên quan:**
+  * **Task Statement 2.1:** Design effective tool interfaces with clear descriptions and boundaries *(Thiết kế giao diện công cụ hiệu quả với mô tả và ranh giới rõ ràng)*.
+  * **Task Statement 1.4:** Implement multi-step workflows with enforcement and handoff patterns *(Triển khai luồng công việc nhiều bước với cơ chế bắt buộc và bàn giao)*.
+* **Phân tích vấn đề thực tế (Problem Breakdown):**
+  1. **Nguyên nhân gây lỗi (8% bị hoàn tác):** Do sự mơ hồ giữa các bản ghi có tên tương tự nhau ("Acme Corp", "Acme Corporation", "ACME Corp Inc.") khi tìm kiếm bằng ngôn ngữ tự nhiên.
+  2. **Nguyên nhân gây khó chịu (Friction):** Quy trình xác nhận qua nhiều bước (*multi-step confirmation flow*) quá cồng kềnh đối với các tác vụ dọn dẹp thường nhật.
+  3. **Mục tiêu đôi:** **Giảm tỷ lệ lỗi (ngăn xóa nhầm)** VỪA **Duy trì hiệu suất (giảm ma sát tương tác)**.
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Mẫu thiết kế "Xác nhận giải tỏa mơ hồ kèm Siêu dữ liệu phân biệt" (Disambiguation with Differentiating Metadata):**  
+   Khi người dùng chỉ định một đối tượng bằng tên gọi tự nhiên có nhiều bản ghi trùng lặp/gần giống nhau trong CSDL, giải pháp chuẩn của Anthropic là **Trả về danh sách các bản ghi khớp kèm theo các trường dữ liệu phân biệt (*differentiating fields* như email, ngày tạo, mã ID, địa chỉ)** để người dùng nhận diện chính xác bản ghi cần thao tác.
+2. **Tối ưu hóa ma sát tương tác (Reducing Conversational/UI Friction):**  
+   Thay vì bắt người dùng trải qua luồng hội thoại xác nhận nhiều bước (*multi-step confirmation*), chuyển sang **xác nhận một cú nhấp chuột (*single-click confirmation*)** giúp giảm ma sát xuống mức tối thiểu mà vẫn đảm bảo tính an toàn (*Human-in-the-loop*) trước một hành động phá hủy (*destructive action*).
+3. **Quy tắc loại trừ các phản mẫu (Anti-Patterns):**
+   * **Chỉ cậy vào Soft-Delete (Lựa chọn 1):** Soft-delete là mạng lưới an toàn sau khi lỗi đã xảy ra (*post-error recovery*), không giải quyết được nguyên nhân gốc rễ là sự mơ hồ trước khi xóa, bắt người dùng vẫn phải tốn công phục hồi thủ công.
+   * **Tự động gộp bản ghi trùng (Lựa chọn 3):** Tự động gộp/xóa các bản ghi có khả năng trùng lặp (*probable duplicates*) mà không có sự kiểm tra của con người dễ dẫn đến hỏng/mất dữ liệu nghiêm trọng nếu thuật toán đoán sai.
+   * **Bắt nhập exact Record ID (Lựa chọn 4):** Ép người dùng phải tự tra cứu và copy-paste mã IDCRM làm mất hoàn toàn sự tiện lợi của giao diện tương tác bằng ngôn ngữ tự nhiên, tạo ra ma sát cực kỳ lớn (*High User Friction*).
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng (Lựa chọn 2):** **Present matched records with differentiating fields and require single-click confirmation of the intended target before executing deletion.**
+  * *Phân tích:* Khớp 100% với nguyên tắc thiết kế UX/Tool của Anthropic. Việc hiển thị các bản ghi trùng kèm trường phân biệt (ví dụ: ngày tạo, người sở hữu, email) giúp triệt tiêu sự mơ hồ dẫn đến 8% lỗi xóa nhầm. Đồng thời, cơ chế xác nhận 1-click thay thế cho luồng xác nhận nhiều bước giúp tối ưu hóa tốc độ làm việc cho người dùng.
+
+* **Lựa chọn 1 (Sai):** *Implement soft-delete with a 30-day recovery window so users can undo mistakes without slowing down the deletion workflow.*
+  * *Phân tích:* Soft-delete chỉ là giải pháp khắc phục hậu quả (*recovery mechanism*), không ngăn chặn được việc xóa nhầm ban đầu. Tỷ lệ 8% xóa nhầm vẫn sẽ diễn ra và người dùng vẫn phải tốn thời gian đi khôi phục lại dữ liệu.
+
+* **Lựa chọn 3 (Sai):** *Deploy automated duplicate detection that identifies and merges probable duplicates, removing the need for manual deletion requests.*
+  * *Phân tích:* Tự động hóa việc hợp nhất/xóa các bản ghi nghi ngờ trùng lặp mà bỏ qua sự xác nhận của con người là một phản mẫu nguy hiểm (*dangerous anti-pattern*) đối với các dữ liệu CRM quan trọng.
+
+* **Lựa chọn 4 (Sai):** *Require users to supply the exact record ID from the CRM Interface rather than using natural language references to contact names.*
+  * *Phân tích:* Bắt người dùng phải chuyển sang giao diện CRM tìm ID rồi dán vào chat sẽ làm tăng ma sát tương tác lên mức tối đa, đi ngược lại mục tiêu xây dựng tác tử hỗ trợ bằng ngôn ngữ tự nhiên.
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Differentiating Fields** | Các trường dữ liệu phân biệt | Các thuộc tính phụ (email, ID, ngày tạo) giúp phân biệt giữa các bản ghi có tên tương tự nhau. |
+| **Single-Click Confirmation** | Xác nhận một cú nhấp chuột | Quy trình xác nhận tối giản giúp giảm ma sát hội thoại mà vẫn đảm bảo sự kiểm soát của con người. |
+| **Entity Disambiguation** | Giải tỏa sự mơ hồ của thực thể | Kỹ thuật làm rõ đối tượng mục tiêu khi truy vấn ngôn ngữ tự nhiên khớp với nhiều bản ghi trong CSDL. |
+| **Conversational Friction** | Ma sát hội thoại / tương tác | Sự phiền hà/tốn thời gian khi người dùng phải trả lời quá nhiều câu hỏi hoặc thực hiện quá nhiều bước trung gian. |
+| **Soft-Delete Mechanism** | Cơ chế xóa mềm | Kỹ thuật đánh dấu ẩn dữ liệu thay vì xóa vĩnh viễn, cho phép khôi phục lại trong một khoảng thời gian. |
+
+---
+
+## Practice Test 2 — Q128: Batch Resubmission of Failed Document Extractions
+
+**Đáp án đúng:**  
+**Submit all 50,000 documents via batch API, then submit failed extractions in successive batches— refining prompts between each batch—until all documents pass validation.** *(Gửi tất cả 50.000 tài liệu qua Batch API, sau đó chỉ gửi lại các bản trích xuất thất bại trong các lô tiếp theo — tinh chỉnh prompt giữa mỗi lô — cho đến khi toàn bộ tài liệu vượt qua kiểm tra)*.
+
+---
+
+### **1. Phân tích theo Chuẩn kiến thức CCA-f (Exam Blueprint Analysis)**
+
+Tình huống này kiểm tra kiến thức về **Message Batches API** thuộc **Task Statement 4.5: Design efficient batch processing strategies**:
+
+* **Đánh giá thời hạn (Deadline / Latency SLA):**  
+  Thời hạn của dự án là **2 tuần (14 ngày = 336 giờ)**, trong khi cửa sổ xử lý tối đa của Batch API là **24 giờ**. Vì thời gian xử lý 24 giờ nhỏ hơn rất nhiều so với thời hạn 14 ngày, hệ thống hoàn toàn đáp ứng được yêu cầu về độ trễ (*latency-tolerant*) và việc sử dụng Batch API giúp **tiết kiệm 50% chi phí API**.
+* **Nguyên tắc xử lý lỗi xử lý lô (Handling Batch Failures):**  
+  Trong lần chạy đầu tiên, 82% (41.000 tài liệu) sẽ thành công ngay lập tức với chi phí giảm một nửa. Đối với 18% (9.000 tài liệu) bị lỗi, Message Batches API cung cấp thuộc tính `custom_id` để định danh chính xác từng tài liệu thất bại. Chiến lược tối ưu nhất là **chỉ gửi lại (*resubmit*) đúng các tài liệu thất bại qua `custom_id`** sau khi đã tinh chỉnh prompt để xử lý đúng loại lỗi đó, thay vì chạy lại toàn bộ hoặc chia nhỏ vô ích.
+
+---
+
+### **2. Phân tích chi tiết lý do loại trừ các đáp án còn lại**
+
+* **Lựa chọn 2 (Sai):** *Process 2,000 sample documents via real time API to identify failure patterns and refine prompts, then batch process all 50,000 with the optimized prompts.*  
+  *Phân tích:* Việc chạy 2.000 tài liệu qua Real-time API làm tiêu tốn chi phí gấp đôi không cần thiết cho tập mẫu. Dù có tinh chỉnh prompt trước, khi chạy 50.000 tài liệu vẫn sẽ có những tài liệu bị lỗi phát sinh, và bạn vẫn phải có cơ chế xử lý lỗi sau đó.
+* **Lựa chọn 3 (Sai):** *Use the real-time API for all 50,000 documents since the batch API's 24-hour processing window creates unacceptable deadline risk.*  
+  *Phân tích:* Đây là một cạm bẫy về rủi ro thời gian. Cửa sổ 24 giờ của Batch API hoàn toàn nằm trong tầm kiểm soát đối với thời hạn 14 ngày (336 giờ). Chuyển sang Real-time API cho toàn bộ 50.000 tài liệu sẽ lãng phí 50% ngân sách API mà không đem lại lợi ích thiết thực.
+* **Lựa chọn 4 (Sai):** *Split documents into 10 sequential batches of 5,000 each, analysing results and refining prompts between batches to improve extraction quality progressively.*  
+  *Phân tích:* Việc chia thành 10 lô nối tiếp nhau sẽ bắt hệ thống phải chờ 10 chu kỳ 24 giờ (tổng cộng ít nhất 10 ngày chỉ riêng thời gian chờ API xử lý), tạo ra rủi ro trễ thời hạn không cần thiết và kéo dài thời gian hoàn thành dự án.
+
+---
+
+### **3. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Message Batches API** | API Xử lý Lô tin nhắn | Phương thức gọi API bất đồng bộ giúp giảm 50% chi phí với cửa sổ trả kết quả tối đa 24 giờ. |
+| **Resubmit Only Failed `custom_id`s** | Chỉ gửi lại các ID thất bại | Nguyên tắc chỉ chạy lại những yêu cầu bị lỗi dựa trên mã `custom_id` thay vì rerunning toàn bộ lô. |
+| **Latency-Tolerant Workload** | Tác vụ chịu được độ trễ | Khối lượng công việc không yêu cầu phản hồi thời gian thực, phù hợp với Batch API. |
+| **Prompt Refinement Between Batches** | Tinh chỉnh prompt giữa các lô | Kỹ thuật sửa đổi hướng dẫn/ví dụ dựa trên các nguyên nhân thất bại thực tế trước khi gửi lô phụ. |
+
+---
+
+## Practice Test 2 — Q129: System Prompt Versioning for Long-Running Conversations
+
+**Đáp án đúng:**  
+**Version system prompts and associate each conversation with the prompt version under which it started, applying updates only to new conversations.** *(Đánh mã phiên bản cho system prompt và gắn mỗi cuộc hội thoại với phiên bản prompt mà nó đã bắt đầu, chỉ áp dụng các bản cập nhật cho các cuộc hội thoại mới)*.
+
+---
+
+### **1. Phân tích nguyên nhân cốt lõi (Root Cause Analysis)**
+
+Sự cố xảy ra do hiện tượng **Xung đột Ngữ cảnh lịch sử và Prompt chỉ dẫn (In-Context Pattern Matching & Prompt Mismatch)**:
+
+*   **Bản chất vấn đề:** Các cuộc hội thoại kéo dài nhiều tuần (*multi-session conversations*) đã tích lũy rất nhiều lượt thoại trả lời của Assistant được sinh ra dưới **System Prompt cũ (V1)**. Lịch sử hội thoại đó chứa phong cách văn phong, quy tắc và các tuyên bố trước đó của V1.
+*   **Khi đột ngột đổi sang System Prompt mới (V2):** Claude bị đặt vào thế tiến thoái lưỡng nan:
+    1.  Một mặt, mô hình đọc chỉ dẫn mới trong System Prompt V2.
+    2.  Mặt khác, mô hình thực hiện **pattern-matching** dựa trên chính các câu trả lời cũ của nó trong `messages` history (vốn tuân theo V1).
+*   Con người dùng mới (*new users*) không có lịch sử cũ V1 nên chỉ tuân theo V2 mượt mà và không gặp bất kỳ lỗi xung đột nào.
+
+---
+
+### **2. Tại sao Quản lý phiên bản (Prompt Versioning) là giải pháp tối ưu?**
+
+*   **Bảo toàn tính nhất quán của trạng thái phiên (State & Persona Consistency):** Việc quản lý phiên bản (*versioning system prompts*) và ghim (*pin*) phiên bản prompt gốc cho các cuộc hội thoại đang diễn ra đảm bảo rằng một phiên làm việc kéo dài sẽ luôn giữ đúng văn phong, logic và giả định ban đầu trong suốt vòng đời của nó.
+*   **Cách triển khai chuẩn trong kiến trúc hệ thống:**
+    *   Mỗi cuộc hội thoại lưu trữ một trường metadata: `system_prompt_version: "v1.2"`.
+    *   Các cuộc hội thoại cũ tiếp tục dùng `v1.2` để duy trì tính liên tục và không bị mâu thuẫn văn phong.
+    *   Tất cả cuộc hội thoại mới tạo sẽ tự động kích hoạt `v2.0` để thụ hưởng các cải tiến chất lượng mới nhất.
+
+---
+
+### **3. Phân tích lý do loại trừ các đáp án còn lại**
+
+*   **Lựa chọn 1 (Sai):** *Add instructions to the new system prompt directing the assistant to maintain consistency with any prior statements in the conversation history.*
+    *   *Phân tích:* Việc thêm câu lệnh bắt phải nhất quán với lịch sử cũ không giải quyết được xung đột về văn phong/tính cách giữa V1 và V2. Ngược lại, nó còn ép Prompt V2 phải hoạt động giống V1, làm triệt tiêu các cải tiến chất lượng mà V2 mang lại.
+*   **Lựa chọn 2 (Sai):** *Add a transition message when sessions resume explaining that the assistant has been updated and behavior may differ.*
+    *   *Phân tích:* Đây chỉ là một thông báo xoa dịu trải nghiệm (*disclaimer*), hoàn toàn không khắc phục được lỗi kỹ thuật về việc tác tử đưa ra các câu trả lời mâu thuẫn với thông tin cũ trong ngữ cảnh.
+*   **Lựa chọn 3 (Sai):** *Regenerate summaries of existing conversations using the new prompt and replace the stored histories to align past context with current behavior.*
+    *   *Phân tích:* Việc tạo lại tóm tắt cho toàn bộ các cuộc hội thoại cũ là một giải pháp cực kỳ tốn kém (*high token cost/latency*), rủi ro cao vì dễ làm mất các thông số/dữ liệu thực tế quan trọng (*case facts*), và làm bóp méo nội dung thực sự mà người dùng và tác tử đã trao đổi trong quá khứ.
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **System Prompt Versioning** | Phân phiên bản System Prompt | Kỹ thuật đánh mã phiên bản cho prompt chỉ dẫn để bảo đảm tính tương thích ngược cho các phiên thoại dài hạn. |
+| **In-Context Pattern Matching** | Khớp mẫu trong ngữ cảnh | Thói quen của LLM bắt chước văn phong và định dạng của các lượt thoại trước đó nằm trong lịch sử `messages`. |
+| **Backwards Compatibility** | Tính tương thích ngược | Việc giữ nguyên cấu hình/prompt cũ cho dữ liệu lịch sử để tránh làm hỏng luồng làm việc hiện tại. |
+| **Guideline Drift** | Trôi định hướng | Hiện tượng tác tử lệch dần khỏi quy tắc ban đầu do các câu trả lời cũ trong ngữ cảnh gây nhiễu. |
+
+---
+
+## Practice Test 2 — Q130: System Prompt Versioning for Long-Running Conversations
+
+**Đáp án đúng:**  
+**Version system prompts and associate each conversation with the prompt version under which it started, applying updates only to new conversations.** *(Đánh mã phiên bản cho system prompt và gắn mỗi cuộc hội thoại với phiên bản prompt mà nó đã bắt đầu, chỉ áp dụng các bản cập nhật cho các cuộc hội thoại mới)*.
+
+---
+
+### **1. Phân tích nguyên nhân cốt lõi (Root Cause Analysis)**
+
+Sự cố xảy ra do hiện tượng **Xung đột Ngữ cảnh lịch sử và Prompt chỉ dẫn (In-Context Pattern Matching & Prompt Mismatch)**:
+
+*   **Bản chất vấn đề:** Các cuộc hội thoại kéo dài nhiều tuần (*multi-session conversations*) đã tích lũy rất nhiều lượt thoại trả lời của Assistant được sinh ra dưới **System Prompt cũ (V1)**. Lịch sử hội thoại đó chứa phong cách văn phong, quy tắc và các tuyên bố trước đó của V1.
+*   **Khi đột ngột đổi sang System Prompt mới (V2):** Claude bị đặt vào thế tiến thoái lưỡng nan:
+    1.  Một mặt, mô hình đọc chỉ dẫn mới trong System Prompt V2.
+    2.  Mặt khác, mô hình thực hiện **pattern-matching** dựa trên chính các câu trả lời cũ của nó trong `messages` history (vốn tuân theo V1).
+*   Con người dùng mới (*new users*) không có lịch sử cũ V1 nên chỉ tuân theo V2 mượt mà và không gặp bất kỳ lỗi xung đột nào.
+
+---
+
+### **2. Tại sao Quản lý phiên bản (Prompt Versioning) là giải pháp tối ưu?**
+
+*   **Bảo toàn tính nhất quán của trạng thái phiên (State & Persona Consistency):** Việc quản lý phiên bản (*versioning system prompts*) và ghim (*pin*) phiên bản prompt gốc cho các cuộc hội thoại đang diễn ra đảm bảo rằng một phiên làm việc kéo dài sẽ luôn giữ đúng văn phong, logic và giả định ban đầu trong suốt vòng đời của nó.
+*   **Cách triển khai chuẩn trong kiến trúc hệ thống:**
+    *   Mỗi cuộc hội thoại lưu trữ một trường metadata: `system_prompt_version: "v1.2"`.
+    *   Các cuộc hội thoại cũ tiếp tục dùng `v1.2` để duy trì tính liên tục và không bị mâu thuẫn văn phong.
+    *   Tất cả cuộc hội thoại mới tạo sẽ tự động kích hoạt `v2.0` để thụ hưởng các cải tiến chất lượng mới nhất.
+
+---
+
+### **3. Phân tích lý do loại trừ các đáp án còn lại**
+
+*   **Lựa chọn 1 (Sai):** *Add instructions to the new system prompt directing the assistant to maintain consistency with any prior statements in the conversation history.*
+    *   *Phân tích:* Việc thêm câu lệnh bắt phải nhất quán với lịch sử cũ không giải quyết được xung đột về văn phong/tính cách giữa V1 và V2. Ngược lại, nó còn ép Prompt V2 phải hoạt động giống V1, làm triệt tiêu các cải tiến chất lượng mà V2 mang lại.
+*   **Lựa chọn 2 (Sai):** *Add a transition message when sessions resume explaining that the assistant has been updated and behavior may differ.*
+    *   *Phân tích:* Đây chỉ là một thông báo xoa dịu trải nghiệm (*disclaimer*), hoàn toàn không khắc phục được lỗi kỹ thuật về việc tác tử đưa ra các câu trả lời mâu thuẫn với thông tin cũ trong ngữ cảnh.
+*   **Lựa chọn 3 (Sai):** *Regenerate summaries of existing conversations using the new prompt and replace the stored histories to align past context with current behavior.*
+    *   *Phân tích:* Việc tạo lại tóm tắt cho toàn bộ các cuộc hội thoại cũ là một giải pháp cực kỳ tốn kém (*high token cost/latency*), rủi ro cao vì dễ làm mất các thông số/dữ liệu thực tế quan trọng (*case facts*), và làm bóp méo nội dung thực sự mà người dùng và tác tử đã trao đổi trong quá khứ.
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **System Prompt Versioning** | Phân phiên bản System Prompt | Kỹ thuật đánh mã phiên bản cho prompt chỉ dẫn để bảo đảm tính tương thích ngược cho các phiên thoại dài hạn. |
+| **In-Context Pattern Matching** | Khớp mẫu trong ngữ cảnh | Thói quen của LLM bắt chước văn phong và định dạng của các lượt thoại trước đó nằm trong lịch sử `messages`. |
+| **Backwards Compatibility** | Tính tương thích ngược | Việc giữ nguyên cấu hình/prompt cũ cho dữ liệu lịch sử để tránh làm hỏng luồng làm việc hiện tại. |
+| **Guideline Drift** | Trôi định hướng | Hiện tượng tác tử lệch dần khỏi quy tắc ban đầu do các câu trả lời cũ trong ngữ cảnh gây nhiễu. |
+
+---
+
+## Practice Test 2 — Q131: Chunking Long Transcripts Before Structured Extraction
+
+**Đáp án đúng:**  
+**Split lengthy transcripts into chunks, extract from each chunk separately, then merge and deduplicate the results.** *(Chia bản ghi chép cuộc họp dài thành các đoạn nhỏ (chunks), trích xuất dữ liệu từ từng đoạn riêng biệt, sau đó hợp nhất và loại bỏ dữ liệu trùng lặp)*.
+
+---
+
+### **1. Phân tích theo Chuẩn kiến thức CCA-f (Exam Blueprint Analysis)**
+
+* **Phân vùng kiến thức chính:**
+  * **Domain 1: Agentic Architecture & Orchestration** (Task Statement 1.6: *Task decomposition strategies for complex/large inputs*).
+  * **Domain 5: Context Management & Reliability** (Task Statement 5.4: *Context window budgeting and handling document degradation*).
+* **Bản chất vấn đề:**  
+  Mặc dù bản ghi chép cuộc họp dài (>60 phút) vẫn nằm trong giới hạn cửa sổ ngữ cảnh (*fits within the context window*), nhưng khi tài liệu dài có nội dung lan man và thông tin bị rải rác, mô hình sẽ gặp hiện tượng **suy giảm độ chú ý / quên chi tiết (*context degradation / attention dilution*)**.
+* **Giải pháp MapReduce (Chunk, Extract & Merge):**  
+  Đề bài đã cho sẵn chỉ số baseline: **đoạn ngắn (<30 phút) đạt độ chính xác tới 94%**. Chiến lược kiến trúc chuẩn là đưa bài toán xử lý tài liệu dài về quy mô đoạn ngắn bằng cách:
+  1. Chia tài liệu dài thành các đoạn nhỏ (*chunks*) tương đương quy mô <30 phút.
+  2. Trích xuất thông tin độc lập trên từng đoạn (nơi độ chính xác đạt 94%).
+  3. Hợp nhất (*merge*) và loại bỏ trùng lặp (*deduplicate*) các mảng kết quả trích xuất.
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Nhận diện Bẫy "Tóm tắt trước khi trích xuất" (Option 4 - Pre-summarization Trap):**  
+   Tóm tắt trước khi trích xuất (*summarize before extraction*) là một **phản mẫu kinh điển trong đề thi CCA-f**. Việc tóm tắt một văn bản dài lan man sẽ nén các con số, mốc thời gian và chi tiết rải rác thành các câu khái quát chung chung, làm vĩnh viễn mất đi các dữ liệu cần trích xuất.
+2. **Nhận diện Bẫy "Nâng cấp mô hình" (Option 3 - Capacity Trap):**  
+   Nâng cấp lên dòng mô hình cao hơn không giải quyết được nút thắt kiến trúc khi mô hình phải quét qua ngữ cảnh dài lan man chứa thông tin nhiễu.
+3. **Nhận diện Bẫy "Few-shot" (Option 1):**  
+   Ví dụ Few-shot rất hiệu quả để định hình **định dạng chuẩn (*format/normalization*)** hoặc giải quyết **quyết định phân tách (*granularity*)**, nhưng không thể giúp mô hình tránh khỏi việc bỏ sót các chi tiết bị trôi trong một văn bản dài.
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng (Lựa chọn 2):** **Split lengthy transcripts into chunks, extract from each chunk separately, then merge and deduplicate the results.**
+  * *Phân tích:* Khớp 100% với nguyên tắc xử lý tài liệu lớn trong bài thi CCA-f. Việc chia nhỏ giúp giữ cho mỗi lượt trích xuất nằm ở vùng độ chính xác tối đa (94%), sau đó gom và loại trùng mảng dữ liệu có cấu trúc ở bước cuối.
+
+* **Lựa chọn 1 (Sai):** *Add few-shot examples demonstrating correct extraction from lengthy meetings with scattered Information.*
+  * *Phân tích:* Few-shot giúp chuẩn hóa định dạng đầu ra, nhưng không khắc phục được giới hạn chú ý của LLM khi quét qua văn bản dài 60+ phút.
+
+* **Lựa chọn 3 (Sai):** *Upgrade to a more capable model tier for the extraction task*
+  * *Phân tích:* Đây là cạm bẫy "phụ thuộc vào mô hình" (*capability trap*). Chuyển sang mô hình lớn hơn không giải quyết được hiện tượng giảm độ nhạy trích xuất do ngữ cảnh bị loãng.
+
+* **Lựa chọn 4 (Sai):** *Add a pre-extraction step where the model summarizes key discussions and conclusions before performing structured extraction.*
+  * *Phân tích:* Việc tóm tắt trước sẽ nén các chi tiết quan trọng thành văn xuôi mơ hồ trước khi bước trích xuất kịp chạy, làm trầm trọng hơn tỷ lệ mất dữ liệu.
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Chunking & Merging (MapReduce)** | Chia đoạn và Hợp nhất | Kỹ thuật chia tài liệu lớn thành các phần nhỏ để xử lý riêng lẻ rồi gộp mảng kết quả. |
+| **Attention Dilution / Context Degradation** | Phân tán sự chú ý / Suy giảm ngữ cảnh | Hiện tượng mô hình giảm độ chính xác khi quét qua văn bản quá dài hoặc lan man. |
+| **Pre-summarization Risk** | Rủi ro tóm tắt trước | Việc nén văn bản thô thành tóm tắt trước khi trích xuất làm mất mát dữ liệu thực tế. |
+| **Deduplication of Extractions** | Khử trùng lặp dữ liệu trích xuất | Bước lọc bỏ các thực thể/thông tin bị lặp lại sau khi gộp kết quả từ các đoạn chunks. |
+
+---
+
+## Practice Test 2 — Q132: Chunking Long Transcripts Before Structured Extraction
+
+**Đáp án đúng:**  
+**Split lengthy transcripts into chunks, extract from each chunk separately, then merge and deduplicate the results.** *(Chia bản ghi chép cuộc họp dài thành các đoạn nhỏ (chunks), trích xuất dữ liệu từ từng đoạn riêng biệt, sau đó hợp nhất và loại bỏ dữ liệu trùng lặp)*.
+
+---
+
+### **1. Phân tích theo Chuẩn kiến thức CCA-f (Exam Blueprint Analysis)**
+
+* **Phân vùng kiến thức chính:**
+  * **Domain 1: Agentic Architecture & Orchestration** (Task Statement 1.6: *Task decomposition strategies for complex/large inputs*).
+  * **Domain 5: Context Management & Reliability** (Task Statement 5.4: *Context window budgeting and handling document degradation*).
+* **Bản chất vấn đề:**  
+  Mặc dù bản ghi chép cuộc họp dài (>60 phút) vẫn nằm trong giới hạn cửa sổ ngữ cảnh (*fits within the context window*), nhưng khi tài liệu dài có nội dung lan man và thông tin bị rải rác, mô hình sẽ gặp hiện tượng **suy giảm độ chú ý / quên chi tiết (*context degradation / attention dilution*)**.
+* **Giải pháp MapReduce (Chunk, Extract & Merge):**  
+  Đề bài đã cho sẵn chỉ số baseline: **đoạn ngắn (<30 phút) đạt độ chính xác tới 94%**. Chiến lược kiến trúc chuẩn là đưa bài toán xử lý tài liệu dài về quy mô đoạn ngắn bằng cách:
+  1. Chia tài liệu dài thành các đoạn nhỏ (*chunks*) tương đương quy mô <30 phút.
+  2. Trích xuất thông tin độc lập trên từng đoạn (nơi độ chính xác đạt 94%).
+  3. Hợp nhất (*merge*) và loại bỏ trùng lặp (*deduplicate*) các mảng kết quả trích xuất.
+
+---
+
+### **2. Tips để lựa chọn đáp án đúng (Decision Rules & Exam Tips)**
+
+1. **Nhận diện Bẫy "Tóm tắt trước khi trích xuất" (Option 4 - Pre-summarization Trap):**  
+   Tóm tắt trước khi trích xuất (*summarize before extraction*) là một **phản mẫu kinh điển trong đề thi CCA-f**. Việc tóm tắt một văn bản dài lan man sẽ nén các con số, mốc thời gian và chi tiết rải rác thành các câu khái quát chung chung, làm vĩnh viễn mất đi các dữ liệu cần trích xuất.
+2. **Nhận diện Bẫy "Nâng cấp mô hình" (Option 3 - Capacity Trap):**  
+   Nâng cấp lên dòng mô hình cao hơn không giải quyết được nút thắt kiến trúc khi mô hình phải quét qua ngữ cảnh dài lan man chứa thông tin nhiễu.
+3. **Nhận diện Bẫy "Few-shot" (Option 1):**  
+   Ví dụ Few-shot rất hiệu quả để định hình **định dạng chuẩn (*format/normalization*)** hoặc giải quyết **quyết định phân tách (*granularity*)**, nhưng không thể giúp mô hình tránh khỏi việc bỏ sót các chi tiết bị trôi trong một văn bản dài.
+
+---
+
+### **3. Phân tích chi tiết toàn bộ 4 câu trả lời**
+
+* **Đáp án đúng (Lựa chọn 2):** **Split lengthy transcripts into chunks, extract from each chunk separately, then merge and deduplicate the results.**
+  * *Phân tích:* Khớp 100% với nguyên tắc xử lý tài liệu lớn trong bài thi CCA-f. Việc chia nhỏ giúp giữ cho mỗi lượt trích xuất nằm ở vùng độ chính xác tối đa (94%), sau đó gom và loại trùng mảng dữ liệu có cấu trúc ở bước cuối.
+
+* **Lựa chọn 1 (Sai):** *Add few-shot examples demonstrating correct extraction from lengthy meetings with scattered Information.*
+  * *Phân tích:* Few-shot giúp chuẩn hóa định dạng đầu ra, nhưng không khắc phục được giới hạn chú ý của LLM khi quét qua văn bản dài 60+ phút.
+
+* **Lựa chọn 3 (Sai):** *Upgrade to a more capable model tier for the extraction task*
+  * *Phân tích:* Đây là cạm bẫy "phụ thuộc vào mô hình" (*capability trap*). Chuyển sang mô hình lớn hơn không giải quyết được hiện tượng giảm độ nhạy trích xuất do ngữ cảnh bị loãng.
+
+* **Lựa chọn 4 (Sai):** *Add a pre-extraction step where the model summarizes key discussions and conclusions before performing structured extraction.*
+  * *Phân tích:* Việc tóm tắt trước sẽ nén các chi tiết quan trọng thành văn xuôi mơ hồ trước khi bước trích xuất kịp chạy, làm trầm trọng hơn tỷ lệ mất dữ liệu.
+
+---
+
+### **4. Bảng chú giải thuật ngữ Anh - Việt (Glossary for Study Note)**
+
+| Thuật ngữ Anh - Mỹ | Thuật ngữ Tiếng Việt | Định nghĩa / Bối cảnh sử dụng trong bài thi |
+| :--- | :--- | :--- |
+| **Chunking & Merging (MapReduce)** | Chia đoạn và Hợp nhất | Kỹ thuật chia tài liệu lớn thành các phần nhỏ để xử lý riêng lẻ rồi gộp mảng kết quả. |
+| **Attention Dilution / Context Degradation** | Phân tán sự chú ý / Suy giảm ngữ cảnh | Hiện tượng mô hình giảm độ chính xác khi quét qua văn bản quá dài hoặc lan man. |
+| **Pre-summarization Risk** | Rủi ro tóm tắt trước | Việc nén văn bản thô thành tóm tắt trước khi trích xuất làm mất mát dữ liệu thực tế. |
+| **Deduplication of Extractions** | Khử trùng lặp dữ liệu trích xuất | Bước lọc bỏ các thực thể/thông tin bị lặp lại sau khi gộp kết quả từ các đoạn chunks. |
+
+---
+
+---
+
+## Practice Test 2 — Q95: Forced tool_choice for Metadata Extraction Before Enrichment (near-exact duplicate of existing tool_choice rule — answered correctly)
+
+**Note:** Near-exact duplicate of the existing "tool_choice: Forcing Tool Calls" rule (Task Statement 4.3), same worked example (`extract_metadata`), now extended with two enrichment tools (`lookup_citations`, `verify_doi`) that require the DOI extract_metadata produces. Same lesson, same correct pattern: force the specific tool on the first turn only, then use normal `auto` in later turns for the dependent steps.
+
+### Example question (Practice Test 2, Q95 — answered correctly; near-duplicate of the existing tool_choice rule)
+
+**Q:** Your pipeline uses a tool called extract_metadata with a JSON schema for paper details. You've also defined lookup_citations and verify_doi tools for enrichment. During testing, you notice that when users include requests like "extract the metadata and tell me how cited it is," Claude sometimes calls lookup_citations first, which fails because it needs the DOI that extract_metadata would provide. What's the most effective way to ensure structured metadata extraction happens first?
+
+- ❌ Set tool_choice to {"type": "tool", "name": "extract_metadata"} for every API call in the pipeline, ensuring Claude always extracts metadata before any enrichment can occur.
+- ❌ Set tool_choice to "any" so Claude must use a tool, combined with system prompt instructions prioritizing extract_metadata.
+- ❌ Set tool_choice to "auto" and reorder the tool definitions so extract_metadata appears first in the tools array, since Claude prioritizes earlier-listed tools.
+- ✅ **Set tool_choice to {"type": "tool", "name": "extract_metadata"} and process the enrichment requests in subsequent turns after receiving the extracted metadata.**
+
+**Glossary (thuật ngữ):**
+- *enrichment tool* = công cụ làm phong phú dữ liệu (dùng để bổ sung thông tin sau khi đã có dữ liệu cốt lõi, ví dụ tra cứu trích dẫn từ DOI)
+- *data dependency* = phụ thuộc dữ liệu (tool B cần output của tool A làm input, nên phải đảm bảo A chạy trước)
+- *subsequent turns* = các lượt gọi API tiếp theo (sau lượt đầu tiên đã ép buộc tool, các lượt sau quay lại chế độ auto)
+
+---
+
+## Practice Test 2 — Q96: Test-First Workflow as the Objective Feedback Signal for Iterative Refinement (2nd Task Statement 3.5 example — answered incorrectly)
+
+**Note:** Second worked example of Task Statement 3.5 (Iterative refinement) in this cheat sheet, pairing with Q88. Same domain, different angle: Q88 was about *ordering* interacting fixes; this one is about what makes the *feedback signal* driving each refinement cycle actually effective.
+
+| Situation | Best approach |
+|---|---|
+| Complex graph traversal algorithm with specific performance requirements and edge cases (disconnected nodes, cycles, weighted edges); want an efficient workflow for progressive improvement across multiple iterations with Claude | **Write a test suite covering expected behavior, edge cases, and performance requirements BEFORE implementation. Ask Claude to write code that passes the tests, then iterate by sharing test failures with each refinement request** |
+| Detailed natural-language spec of the algorithm + manual review of each output + descriptive feedback on what to change (my answer — marked Sai) | ❌ Trap: feedback is subjective and must be re-articulated in prose every round; no fixed, objective, machine-checkable success criteria — the same weakness as vague/blind feedback loops flagged elsewhere (Task Statement 4.4: feedback must be concrete and structured, not descriptive guesswork) |
+| Reference implementation from documentation, then ask Claude to rewrite it to match codebase style and add edge-case handling, comparing outputs against the reference | ❌ Trap: a generic reference implementation won't encode this project's specific performance requirements or edge-case definitions, and manual output comparison isn't objective or repeatable |
+| Extensive research + a detailed implementation plan via extended thinking, then implement the complete solution from that plan | ❌ Trap: front-loads everything into a single upfront pass with no real iteration loop — closer to "plan once, then execute once" than genuine iterative refinement |
+
+**Tips:** Effective iterative refinement needs an **objective, verifiable feedback signal** at every cycle, not a human re-describing what's wrong each time. Writing the test suite first (behavior + edge cases + performance requirements) turns every iteration into: run tests → share the concrete failures → Claude fixes against a fixed target → repeat. This is strictly better than natural-language specs reviewed manually (subjective, effortful, and doesn't guarantee edge-case coverage was ever pinned down), a reference implementation (doesn't capture this project's own requirements), or a single big upfront plan (no iteration at all).
+
+**Source check (official Exam Guide, Task Statement 3.5 — Iterative refinement):**
+- Extends the same principle as Q88 (iterating in dependency order with verification after each step) to the specific mechanism of *how* verification should happen: a pre-written, objective test suite supplying concrete pass/fail feedback each round, rather than subjective manual review.
+
+### Example question (Practice Test 2, Q96 — answered incorrectly)
+
+**Q:** You're implementing a complex graph traversal algorithm with specific performance requirements and edge cases to handle (disconnected nodes, cycles, weighted edges). You want to structure your workflow for efficient iterative refinement with Claude. What approach will most effectively enable progressive improvement across multiple iterations?
+
+- ❌ Provide Claude with a detailed natural language specification of the algorithm, including all requirements and edge cases. Review each output manually and provide descriptive feedback on what behavior needs to change. *(my answer — marked Sai)*
+- ❌ Provide Claude with a reference implementation from documentation, then ask it to rewrite the code to match your codebase style and add the required edge case handling, comparing outputs against the reference.
+- ❌ Have Claude extensively research the algorithm and create a detailed implementation plan using extended thinking, then implement the complete solution based on that plan.
+- ✅ **Write a test suite covering expected behavior, edge cases, and performance requirements before implementation. Ask Claude to write code that passes the tests, then iterate by sharing test failures with each refinement request.**
+
+**Glossary (thuật ngữ):**
+- *test suite* = bộ kiểm thử (tập hợp các test case bao phủ hành vi mong đợi, edge case, yêu cầu hiệu năng)
+- *test-first / write tests before implementation* = viết test trước khi code (định nghĩa tiêu chí thành công một cách khách quan trước khi bắt tay implement)
+- *progressive improvement* = cải thiện dần qua từng vòng lặp (mỗi vòng dựa trên phản hồi cụ thể từ vòng trước)
+- *extended thinking* = chế độ suy luận mở rộng của Claude (cho phép suy nghĩ sâu/dài trước khi trả lời, nhưng không thay thế được vòng lặp iteration thực sự)
+- *objective/verifiable feedback* = phản hồi khách quan, có thể kiểm chứng được (đối lập với feedback mô tả chủ quan bằng lời của con người)
+
+---
+
+## Practice Test 2 — Q97: .claude/rules/ YAML Frontmatter Path-Scoping vs. Subdirectory CLAUDE.md (first Task Statement 3.3 example — answered incorrectly, corrected via revealed key)
+
+**Note:** No "Đúng/Sai" tag was visible on the first screenshot, so this was initially answered by reasoning ("Split content into subdirectory CLAUDE.md files"). The user then re-sent the same question with the platform's key revealed: that answer is marked **Sai**, and "Create files in .claude/rules/ with YAML frontmatter path-scoping" is marked **Đúng**. Corrected below — this is the first worked example distinguishing Task Statement 3.3 (Path-specific rules, a dedicated declarative mechanism) from 3.1 (CLAUDE.md hierarchy, directory-based).
+
+| Situation | Best approach |
+|---|---|
+| Monorepo/IaC repo with distinct subdirectories needing different conventions (Terraform, Kubernetes, CI/CD pipelines); a single root CLAUDE.md has grown to 500+ lines; irrelevant subdirectory rules (e.g. Terraform-specific) load into context even when editing unrelated files (e.g. Kubernetes), wasting tokens | **Create files in .claude/rules/ with YAML frontmatter path-scoping (e.g., paths: ["terraform/*/"]), so a rule only loads when editing files matching its declared path pattern** |
+| Split content into subdirectory CLAUDE.md files (/terraform/CLAUDE.md, /kubernetes/CLAUDE.md), so Claude loads directory-specific guidance (my/user's original answer — marked Sai) | ❌ Trap: this is Task Statement 3.1's directory-based CLAUDE.md hierarchy, not 3.3's dedicated path-specific rules mechanism — it only scopes by physical directory placement, coarser than declarative, pattern-based path-scoping (which can match file types/paths more flexibly than directory boundaries alone) |
+| Keep the root CLAUDE.md and use @path/to/import syntax to modularly include tool-specific guidance files from separate documents | ❌ Trap: @imports still pull the referenced content into the root CLAUDE.md's context every time it's read, regardless of which subdirectory is being edited — doesn't stop irrelevant rules from loading |
+| Restructure the root CLAUDE.md into clearly labeled sections with headers (e.g., "## Terraform Conventions"), improving organization and readability | ❌ Trap: only improves human readability — the entire 500+ line file still loads into context regardless of section headers, so the actual token-consumption problem is untouched |
+
+**Tips:** When a question is specifically about **path-specific rules** (Task Statement 3.3), the exam's designated mechanism is a dedicated `.claude/rules/` directory of rule files carrying YAML frontmatter that declares which paths/patterns each rule applies to — loaded only when Claude is working with matching files. This is a distinct, more precise mechanism from the general CLAUDE.md hierarchy (Task Statement 3.1), which scopes only by physical directory nesting. Even when a scenario's directories already line up conveniently with the needed conventions (as here), the exam favors the explicit, declarative path-scoping tool built for exactly this purpose over the coarser directory-based CLAUDE.md split — don't default to "just add a subdirectory CLAUDE.md" when the question is testing 3.3 specifically.
+
+**The deeper technical reason subdirectory CLAUDE.md fails here (verified directly against the official Exam Guide PDF, not just the platform's key):** CLAUDE.md files at different hierarchy levels (user/project/directory) are **concatenated into context rather than excluding/overriding each other** — the guide states verbatim: *"All discovered files are concatenated into context rather than overriding each other."* So splitting into `/terraform/CLAUDE.md` and `/kubernetes/CLAUDE.md` does **not** by itself guarantee Terraform rules stop loading while editing Kubernetes files — nothing about the hierarchy mechanism excludes sibling directories' files from being concatenated in. The guide is explicit that CLAUDE.md hierarchy (3.1) isn't the token-reduction tool at all: *"if you want to shrink per-session context, the tool for the job is `.claude/rules/` with path-scoped frontmatter (covered in Task Statement 3.3)."*
+
+**Source check (verified directly against the official Exam Guide PDF, Task Statement 3.3 — Path-specific rules):**
+- ".claude/rules/ files with YAML frontmatter paths fields containing glob patterns for conditional rule activation"
+- "How path-scoped rules load only when editing matching files, reducing irrelevant context and token usage"
+- "Creating .claude/rules/ files with YAML frontmatter path scoping (e.g., paths: [\"terraform/**/*\"]) so rules load only when editing matching files" — near-verbatim match to this question's correct option
+- Contrast, Task Statement 3.1: "All discovered files are concatenated into context rather than overriding each other" — confirming subdirectory CLAUDE.md alone does not exclude irrelevant sibling-directory content from loading
+
+### Example question (Practice Test 2, Q97 — corrected after the platform's key was revealed)
+
+**Q:** Your infrastructure-as-code repository includes Terraform modules (/terraform/), Kubernetes manifests (/kubernetes/), and CI/CD pipeline scripts (/pipelines/). Each requires different conventions, but your single root CLAUDE.md has grown to 500+ lines. When developers work on Kubernetes files, Terraform-specific rules load into context unnecessarily, consuming tokens. What is the best approach to reorganize so only relevant guidance loads when editing specific file types?
+
+- ❌ Keep the root CLAUDE.md and use @path/to/import syntax to modularly include tool-specific guidance files from separate documents.
+- ❌ Split content into subdirectory CLAUDE.md files (/terraform/CLAUDE.md, /kubernetes/CLAUDE.md), so Claude loads directory-specific guidance. *(my/the user's original answer — marked Sai)*
+- ✅ **Create files in .claude/rules/ with YAML frontmatter path-scoping (e.g., paths: ["terraform/*/"]), loading rules only when editing matching files.**
+- ❌ Restructure the root CLAUDE.md into clearly labeled sections with headers (e.g., "## Terraform Conventions"), improving organization and readability.
+
+**Glossary (thuật ngữ):**
+- *path-specific rules* = quy tắc theo phạm vi đường dẫn (chỉ áp dụng/nạp khi làm việc với các file/đường dẫn khớp một mẫu khai báo trước)
+- *.claude/rules/* = thư mục chứa các file rule riêng biệt, mỗi file có thể khai báo phạm vi áp dụng của riêng nó qua frontmatter
+- *YAML frontmatter path-scoping* = khai báo mẫu đường dẫn (path pattern) ở phần metadata YAML đầu file, để hệ thống chỉ nạp rule đó khi đang làm việc với file khớp mẫu
+- *subdirectory CLAUDE.md* = file CLAUDE.md đặt trong thư mục con (thuộc cơ chế phân cấp CLAUDE.md — Task Statement 3.1 — chỉ scope theo vị trí thư mục vật lý, thô hơn so với path-scoping bằng frontmatter)
+- *@path/to/import* = cú pháp nhúng nội dung file khác vào CLAUDE.md hiện tại (nội dung vẫn nạp toàn bộ mỗi khi file gốc được đọc, không có tính chọn lọc theo thư mục)
+- *token consumption* = mức tiêu tốn token (dung lượng ngữ cảnh bị chiếm dụng bởi nội dung được nạp vào, kể cả khi không liên quan)
+
+---
+
+## Practice Test 3 — Q98 (Câu 19/42): Consolidating Semantically Overlapping Tools to Structurally Eliminate Selection Errors (answered incorrectly)
+
+**Note:** First question from a different practice test in this set (shown as "Câu 19/42" rather than the "N/60" numbering used for Practice Test 2). Numbered Q98 to continue this cheat sheet's running sequence without collision; original in-test number recorded in the heading for cross-reference.
+
+| Situation | Best approach |
+|---|---|
+| MCP tool count grew from 4 to 10 (added check_delivery_status, contact_driver, issue_credit, apply_promo_code, update_delivery_address, reschedule_delivery); tool selection accuracy dropped to 71%; most errors are the agent confusing semantically overlapping tools (issue_credit vs. process_refund; check_delivery_status vs. lookup_order, which already returns that data) | **Consolidate the semantically overlapping tools — e.g., merge issue_credit and process_refund into a single resolve_compensation tool with an optional include_tracking flag** — removes the decision point entirely by leaving only one tool where there used to be two ambiguous ones |
+| Split the tools across two sub-agents ("financial resolution": process_refund, issue_credit, apply_promo_code; "delivery": remaining tools) with a coordinator routing between them (my answer — marked Sai) | ❌ Trap: the exact pair the logs flag as most error-prone (issue_credit vs. process_refund) both end up in the *same* sub-agent — the ambiguity is completely unchanged, just relocated one level down, while adding unnecessary coordinator complexity that doesn't touch the actual root cause |
+| Enable the tool search tool with defer_loading on the six new tools, keeping the original four always loaded, so the agent dynamically calls it when needed | ❌ Trap: addresses a different problem (too many tool definitions loaded into context at once, wasting tokens) — once a refund-related task is in progress, both issue_credit and process_refund would still be discovered/loaded together, and the semantic ambiguity between them is untouched |
+| Add few-shot examples to the system prompt demonstrating correct selection for each ambiguous tool pair (e.g., issue_credit vs. process_refund) | ❌ Trap: a prompt-level patch, not a structural fix — the overlapping tools still both exist, the fix is probabilistic rather than guaranteed, and the example list has to keep growing as new ambiguous pairs appear; doesn't "structurally eliminate" anything, which is what the question specifically asks for |
+
+**Tips:** When agent errors cluster around choosing between two (or more) tools whose purposes genuinely overlap, the fix that *structurally* eliminates the problem is to redesign the tools themselves — merge overlapping capabilities into one tool (with a parameter/flag distinguishing variants if needed) or remove a redundant tool whose output is already covered by another. Reorganizing *around* the model (sub-agent splitting, deferred loading) or *guiding* the model with more examples both leave the actual overlapping tool definitions in place — the ambiguity survives, just relocated or made somewhat less likely. This mirrors the general principle that a tool's description and scope should be distinct and non-overlapping so the model never has two equally-plausible correct choices for the same task.
+
+**Source check (official Exam Guide, Task Statement 2.1 — Tool interfaces & descriptions):**
+- 2.1 covers designing tools with clear, non-overlapping purposes; consolidating or removing semantically redundant tools when evaluation data shows the agent confusing them, as the structural fix — as opposed to prompt-level mitigations (few-shot examples) or orchestration-level workarounds (sub-agent splitting, deferred loading) that leave the overlapping tool definitions themselves unchanged.
+
+### Example question (Practice Test 3, Câu 19/42 — answered incorrectly)
+
+**Q:** After expanding the agent's MCP tools with delivery-specific capabilities (check_delivery_status, contact_driver, issue_credit, apply_promo_code, update_delivery_address, reschedule_delivery), the total tool count has grown from 4 to 10. Your evaluation suite shows tool selection accuracy has dropped to 71%. Log analysis reveals the majority of errors involve the agent selecting between semantically overlapping tools—calling issue_credit when process_refund is correct, and calling check_delivery_status when lookup_order already returns the needed data. Which approach structurally eliminates the semantic overlaps that are being logged as the error source?
+
+- ✅ **Consolidate semantically overlapping tools—merge issue_credit and process_refund into a single resolve_compensation tool with an optional include_tracking flag.**
+- ❌ Enable the tool search tool with defer_loading on the six new tools, keeping the original four always loaded, so the agent dynamically calls it when needed.
+- ❌ Add few-shot examples to the system prompt demonstrating correct selection for each ambiguous tool pair, such as showing when issue_credit or process_refund is appropriate.
+- ❌ Split the tools across two sub-agents—a "financial resolution" agent with process_refund, issue_credit, and apply_promo_code, and a "delivery" agent with the remaining delivery tools—with a coordinator routing between them. *(my answer — marked Sai)*
+
+**Glossary (thuật ngữ):**
+- *semantically overlapping tools* = các tool chồng chéo về mặt ngữ nghĩa (mục đích/chức năng gần giống nhau, khiến model khó phân biệt nên gọi cái nào)
+- *structurally eliminate* = loại bỏ tận gốc ở tầng thiết kế/cấu trúc (khác với giảm thiểu hay né tránh vấn đề bằng prompt hoặc điều phối)
+- *consolidate tools* = gộp các tool lại thành một (giữ lại một tool duy nhất cho một nhóm chức năng liên quan, có thể thêm tham số/flag để phân biệt biến thể)
+- *defer_loading* = tải trễ (chỉ nạp định nghĩa tool vào context khi thực sự cần, thông qua cơ chế tool search, nhằm tiết kiệm token — không liên quan đến việc phân biệt tool chồng chéo)
+- *coordinator routing* = điều phối viên định tuyến (một agent trung tâm quyết định chuyển yêu cầu cho sub-agent nào xử lý)
+
+---
+
+## Practice Test 3 — Q99: Consolidating Both Overlapping Tool Pairs (near-duplicate of Q98 — answered correctly)
+
+**Note:** Near-duplicate of Q98 (Task Statement 2.1 — Tool interfaces & descriptions), same underlying lesson: structurally eliminate semantic overlap by merging tools, not by deferred loading, few-shot examples, or sub-agent splitting. This version's correct answer consolidates *both* overlapping pairs identified in the logs, not just one.
+
+### Example question (Practice Test 3, Q99 — answered correctly; near-duplicate of Q98)
+
+**Q:** After expanding the agent's MCP tools with delivery-specific capabilities [apply_promo_code, update_delivery_address, reconcile_delivery], the total tool count has grown from 1 to 7. We have observed that the agent now shows tool selection accuracy has dropped from 86% to 71%. Log analysis reveals the majority of errors involve the agent selecting between semantically overlapping tools — calling issue_credit when process_refund was correct, and calling check_delivery_status when lookup_order already returns the needed data. Which approach structurally eliminates the semantic overlap identified in the error source?
+
+- ❌ Enable the tool search tool with defer_loading on the six new tools, keeping the original two always loaded, so the agent dynamically discovers specialized tools only when needed.
+- ❌ Add few-shot examples to the system prompt demonstrating correct selection for each ambiguous tool, such as showing when issue_credit applies versus when process_refund is appropriate.
+- ✅ **Consolidate semantically overlapping tools – merge issue_credit and process_refund into a single handle_promotions tool with an action parameter and fold check_delivery_status into lookup_order with an optional include_tracking flag.**
+- ❌ Split the tools across two sub-agents — a "financial resolution" agent with issue_credit, process_refund, return_order, and apply_promo_code, and a "delivery operations" agent with the remaining delivery tools — with a coordinating routing between them.
+
+**Glossary (thuật ngữ):**
+- *action parameter* = tham số hành động (một field trong tool gộp, dùng để chỉ định biến thể hành vi cụ thể cần thực hiện, ví dụ "issue_credit" hay "process_refund")
+- *fold X into Y* = gộp/sáp nhập tool X vào tool Y đã có (loại bỏ tool X, mở rộng Y để bao phủ luôn chức năng của X, thường qua flag tuỳ chọn)
+
+---
+
+## Practice Test 3 — Q100: Splitting a Single Overloaded Tool into Operation-Specific Tools (mirror of the Q98/Q99 consolidation lesson — answered correctly)
+
+**Note:** The flip side of Q98/Q99. There, two tools overlapped in *purpose* and needed merging. Here, one tool is overloaded with three genuinely *distinct* operations that each need different parameters — the fix runs the opposite direction: split into dedicated tools. Same underlying principle both times: each tool's interface/schema should map cleanly to exactly one job.
+
+| Situation | Best approach |
+|---|---|
+| One tool covers three distinct operations (issuing refunds: amount + reason; canceling orders: reason; reserving/reconciling: shipping address), sharing only an order_id; testing shows the model frequently omits required parameters or includes irrelevant ones | **Split into three separate tools, each defining only the parameters required for that specific operation** |
+| Keep one unified tool with a nested "operation" object parameter whose internal structure varies by operation type, documented in the tool description | ❌ Trap: still a single tool — the model must still infer which nested sub-structure applies for a given call; description text is guidance only, not schema-enforced, so wrong/missing fields remain possible |
+| Keep one unified tool but add JSON Schema if-then-else conditionals to enforce that parameters like amount are required only when the operation type is "refund" | ❌ Trap: technically valid JSON Schema, but far more complex for the model to correctly satisfy at generation time than simply picking one of three tools with a flat, unconditional schema — added conditional logic increases the chance of getting it wrong, it doesn't reduce it |
+| Keep one unified tool with all parameters marked optional, but add few-shot examples in the system prompt showing correct parameter combinations for each operation | ❌ Trap: removes the schema's required-field guarantee entirely and replaces it with a prompt-level, probabilistic fix (few-shot) — the same "weakening the guarantee instead of using it" trap seen elsewhere in this cheat sheet |
+
+**Tips:** When a single tool is being asked to serve multiple genuinely distinct operations with different parameter requirements, don't reach for schema tricks (nested variant objects, conditional if-then-else logic) or prompt-level patches (optional params + examples) to make one tool cover all cases — split it into one tool per operation instead. A simple, flat, precisely-required schema per operation is both easier for the model to satisfy correctly and easier to reason about than a single tool juggling conditional structure. (Contrast with Q98/Q99: split when a tool is overloaded with distinct operations; consolidate when multiple tools overlap in purpose — both serve the same goal of a clean, unambiguous one-tool-per-job mapping.)
+
+**Source check (official Exam Guide, Task Statement 2.1 — Tool interfaces & descriptions):**
+- 2.1 covers designing each tool's interface to map to a single, well-defined operation with a precise required-parameter schema, rather than overloading one tool with multiple operations via nested/conditional structure or loosened (all-optional) schemas compensated for by prompting.
+
+### Example question (Practice Test 3, Q100 — answered correctly)
+
+**Q:** Your order management system requires tools for three distinct operations: issuing refunds (requires amount and reason), canceling orders (requires reason), and reserving/reconciling [shipping] (requires shipping address). Each operation shares an order_id parameter but has different additional requirements. You notice during testing that your current [unified tool] frequently omits required parameters or includes irrelevant ones. What design change will most effectively improve parameter accuracy?
+
+- ❌ Keep one unified tool with a nested operation object parameter whose internal structure varies by operation type, documented in the tool description.
+- ✅ **Split into three separate tools (each defining only the parameters required for that specific operation).**
+- ❌ Keep one unified tool but add JSON Schema if-then-else conditionals to enforce that parameters like amount are required only when the operation type is "refund".
+- ❌ Keep one unified tool with all parameters marked optional, but add few-shot examples in the system prompt showing correct parameter combinations for each operation.
+
+**Glossary (thuật ngữ):**
+- *unified/overloaded tool* = một tool duy nhất bị "gánh" nhiều nghiệp vụ khác nhau, thay vì mỗi nghiệp vụ có tool riêng
+- *nested operation object* = tham số dạng object lồng nhau, có cấu trúc bên trong thay đổi tuỳ theo loại thao tác — khó cho model suy luận đúng
+- *JSON Schema if-then-else conditionals* = cú pháp JSON Schema cho phép yêu cầu tham số có điều kiện (ví dụ: nếu operation="refund" thì amount bắt buộc) — hợp lệ về kỹ thuật nhưng làm tăng độ phức tạp mà model phải xử lý đúng mỗi lần gọi
+- *operation-specific tools* = tool riêng biệt cho từng nghiệp vụ cụ thể (mỗi tool có schema đơn giản, phẳng, chỉ chứa đúng tham số cần thiết)
+
+---
+
+## Practice Test 3 — Q101: General Principle vs. Exhaustive Conditionals for Implicit Signals, Preserving Safety-Critical Rules (first Task Statement 4.1 example — answered correctly)
+
+**Note:** First question in this cheat sheet testing Task Statement 4.1 (Explicit criteria), previously untested. Core lesson: when to replace specific conditional rules with a general guiding principle, and when a rule must stay hard-coded regardless.
+
+| Situation | Best approach |
+|---|---|
+| System prompt has detailed if-then conditionals for user expertise (e.g., "if user mentions being a beginner...", "if they use term 'progressive overload'..."), plus one safety-critical rule ("if they ask about injury history, always recommend consulting a physician"); the assistant handles explicit expertise declarations correctly but misses implicit signals (e.g., natural use of technical terminology) not covered by any conditional, defaulting to overly detailed responses | **Replace most conditionals with a general principle ("Adapt explanation depth to match user expertise, mirroring their terminology"), but keep only the safety-critical conditional (physician consultation) as an explicit rule** |
+| Add more conditional branches to cover additional expertise signals (e.g., "if user mentions specific rep ranges or asks about periodization, treat as advanced") | ❌ Trap: whack-a-mole — you can never enumerate every possible implicit signal with more rules; each new signal type requires yet another conditional, and the underlying judgment gap never closes |
+| Implement a pre-conversation intake asking users to rate their experience level, then inject that rating into the system prompt for all subsequent responses | ❌ Trap: adds UX friction (a mandatory step before the conversation even starts), doesn't fix the assistant's inability to read implicit cues *during* the conversation, and doesn't adapt if demonstrated expertise becomes clearer as the conversation progresses |
+| Add an explicit instruction for the model to ask a clarifying question about experience level whenever expertise isn't immediately clear from the first message | ❌ Trap: defers the judgment call instead of building the capability to make it — adds a clarifying-question turn to every ambiguous interaction rather than teaching the model to weigh contextual cues (like technical terminology) it's already being given |
+
+**Tips:** Rigid if-then conditionals only fire on exactly what they enumerate — they can't generalize to implicit signals a rule-writer didn't anticipate. When behavior needs to adapt to nuanced, hard-to-enumerate context (like inferring expertise from word choice), state the underlying *principle* and let the model apply judgment, rather than trying to hard-code every trigger. The one exception: genuinely safety-critical rules (here, the physician-consultation recommendation) should stay as explicit, guaranteed conditionals — don't fold a safety rule into a general principle just because you're simplifying everything else. This pairs with the cheat sheet's "guarantee → code, not prompts" rule: the safety-critical piece needs a hard guarantee; the adaptive-tone piece is exactly where a general principle outperforms an exhaustive rule list.
+
+**Source check (official Exam Guide, Task Statement 4.1 — Explicit criteria):**
+- 4.1 covers when to state explicit, itemized criteria/conditionals versus a general guiding principle: exhaustive conditionals fail to generalize to implicit or novel signals, while a well-stated principle lets the model apply judgment across cases a rule-writer couldn't anticipate — except for genuinely safety-critical requirements, which should remain explicit, guaranteed rules regardless of context.
+
+### Example question (Practice Test 3, Q101 — answered correctly)
+
+**Q:** Your fitness coaching assistant uses a system prompt with detailed conditional logic: "If the user mentions being a beginner, provide step-by-step form instructions. If they use term 'progressive overload' or 'superset', respond concisely. If they ask about injury history, always recommend consulting a physician." During evaluation, you find the assistant correctly [handles] explicit expertise declarations but struggles when users don't clearly state their level—often defaulting to overly detailed responses regardless of contextual cues like technical terms. Which change to the system prompt would most directly address this failure to pick up on implicit expertise signals?
+
+- ✅ **Replace most conditionals with a general principle: "Adapt explanation depth to match user expertise, mirroring their terminology." Keep only the safety-critical conditional about consultations.**
+- ❌ Add more conditional branches to cover additional expertise signals, such as "If user mentions specific rep ranges or asks about periodization, treat as advanced."
+- ❌ Implement a pre-conversation intake that asks users to rate their experience level, then inject that rating into the system prompt as context for all subsequent responses.
+- ❌ Add an explicit instruction for the model to ask a clarifying question about experience level whenever the user's expertise isn't immediately clear from their first message.
+
+**Glossary (thuật ngữ):**
+- *conditional logic (if-then rules)* = luật điều kiện tường minh (chỉ kích hoạt đúng khi gặp đúng tín hiệu đã liệt kê sẵn — không tự suy rộng ra tình huống mới)
+- *general principle* = nguyên tắc tổng quát (mô tả mục tiêu/định hướng hành vi mong muốn, để model tự vận dụng phán đoán thay vì theo luật cứng)
+- *implicit signal* = tín hiệu ngầm (thông tin ngụ ý qua cách diễn đạt/ngữ cảnh, không được nói ra trực tiếp — ví dụ dùng thuật ngữ chuyên môn tự nhiên)
+- *safety-critical conditional* = luật điều kiện liên quan an toàn (cần được đảm bảo tuyệt đối, không nên thay bằng nguyên tắc chung chung dù đang đơn giản hoá phần còn lại)
+- *pre-conversation intake* = bước khảo sát/thu thập thông tin trước khi bắt đầu hội thoại chính (thêm ma sát trải nghiệm, không giải quyết vấn đề nhận biết tín hiệu trong lúc hội thoại diễn ra)
+
+---
+
+## Practice Test 3 — Q102: Documenting Testing Standards in CLAUDE.md to Reduce Low-Value Test Generation Upstream (Task Statement 3.1 — answered correctly)
+
+**Note:** Applies the cheat sheet's existing "fix the root cause at the right layer" principle (rule #2) to a new scenario. Key phrase in the question: "reduce the rate... in the first place" — signals the fix must be upstream (before generation), not downstream (filtering/scoring after generation).
+
+| Situation | Best approach |
+|---|---|
+| Test generation for new code produces 55% low-value unit tests (trivial assertions that only check no exception is thrown, tests duplicating existing coverage, tests ignoring the team's fixture conventions); need to reduce the *rate* of low-value tests being generated, not just filter them after the fact | **Document testing standards in CLAUDE.md: valuable test criteria, available fixtures with their intended use cases, and examples distinguishing meaningful behavioral tests from trivial assertions** |
+| Add post-generation coverage analysis that automatically filters out any generated test that doesn't increase line coverage beyond what existing tests provide | ❌ Trap: coverage is a poor proxy for value — a test can raise coverage while still being trivial, or get wrongly filtered despite covering a genuinely different behavior/edge case at overlapping lines; also purely reactive (after generation), doesn't reduce the generation rate itself |
+| Implement a two-phase generation where a second Claude call scores each test against quality criteria, filtering out low-scoring tests before presenting results to developers | ❌ Trap: also downstream/reactive — adds latency and cost for a second LLM call, but doesn't fix why low-value tests are generated in the first place (missing context about team conventions); the same ungrounded generation keeps happening, now just paying to filter it |
+| Restrict test generation to directories where historical quality metrics show higher acceptance rates, disabling it for areas where generated tests consistently require heavy editing | ❌ Trap: avoids the problem instead of solving it — gives up on exactly the areas that most need better-generated tests, based on coarse historical stats, and teaches the model nothing about what makes a test valuable |
+
+**Tips:** When a question asks how to reduce a bad-output rate "in the first place," look for the option that supplies the model with the missing upstream context (project conventions, criteria, examples) rather than one that inspects/filters/scores output after generation, or one that avoids the problem area entirely. This is the same "fix the root cause at the right layer" principle already in this cheat sheet: a generic/underspecified generation process → give it the missing standards (CLAUDE.md), don't bolt on an extra classifier, coverage heuristic, or router around it.
+
+**Source check (official Exam Guide, Task Statement 3.1 — CLAUDE.md hierarchy):**
+- 3.1 covers using CLAUDE.md to persist project-specific conventions and quality criteria (here: what makes a test valuable, available fixtures and their use cases, examples separating meaningful from trivial tests) so that generation is grounded in team standards from the start, rather than corrected after the fact via post-processing, a second scoring pass, or restricting scope.
+
+### Example question (Practice Test 3, Q102 — answered correctly)
+
+**Q:** Your test generation produces unit tests for new code, but reviews show 55% are low-value: trivial assertions that only verify functions don't throw exceptions, tests duplicating existing coverage, or tests ignoring your team's fixture conventions. How do you reduce the rate of low-value tests being generated in the first place?
+
+- ❌ Add post-generation coverage analysis that automatically filters out any generated test that doesn't increase line coverage beyond what existing tests provide.
+- ❌ Implement a two-phase generation where a second Claude call scores each test against quality criteria, filtering out low-scoring tests before presenting results to developers.
+- ❌ Restrict test generation to directories where historical quality metrics show higher acceptance rates, disabling it for areas where generated tests consistently require heavy editing.
+- ✅ **Document testing standards in CLAUDE.md including valuable test criteria, available fixtures with intended use cases, and examples distinguishing meaningful behavioral tests from trivial assertions.**
+
+**Glossary (thuật ngữ):**
+- *low-value test* = test kém giá trị (assertion hời hợt, trùng lặp coverage, hoặc bỏ qua quy ước của team)
+- *trivial assertion* = assertion hời hợt (chỉ kiểm tra hàm không ném exception, không thực sự xác minh hành vi mong đợi)
+- *fixture* = dữ liệu/thiết lập mẫu dùng chung cho test (test data, mock objects...) theo quy ước riêng của team
+- *"in the first place"* = "ngay từ đầu" — cụm từ tín hiệu cho biết câu hỏi đang tìm giải pháp NGĂN CHẶN từ gốc (upstream), không phải xử lý/lọc sau khi vấn đề đã xảy ra (downstream)
+- *two-phase generation* = sinh kết quả qua hai giai đoạn (ví dụ: sinh rồi dùng một lệnh gọi model khác để chấm điểm/lọc lại) — vẫn là xử lý sau khi đã sinh, không phải phòng ngừa từ đầu
+
+---
+
+## Practice Test 3 — Q103: Enforcing a Threshold Inside the Tool Itself vs. via a PreToolUse Hook + Context Flag (sharpens the "Hooks vs. Prompts" rule — answered incorrectly)
+
+**Note:** At first glance this looks like it contradicts the existing "Guaranteed Compliance: Hooks vs. Prompts" rule (where a hook that blocks refunds > $500 and redirects to escalation is the *correct* answer). It doesn't — it sharpens the principle: the earlier hook **completely blocks** the violating action and redirects to a wholly separate workflow (a clean circuit breaker). This question's hook does **not** block anything — it just sets a context flag that the tool must separately check, adding an unnecessary coordination chain when the tool already receives the data it needs to enforce the rule itself.
+
+| Situation | Best approach |
+|---|---|
+| A process_reimbursement tool must guarantee a $500 approval threshold, tamper-proof regardless of how the agent is prompted, for hundreds of daily requests | **Have the tool itself accept amount and details and internally enforce the threshold: amounts <$500 auto-disburse with a success confirmation; amounts >$500 create a pending approval request and return a "manager review pending" status** — the guarantee lives entirely inside the tool's own code path, with no external coordination required |
+| Implement the threshold check in a PreToolUse hook that inspects amount before the tool runs; if it exceeds $500, the hook modifies the context to add a requires_approval: true flag, which the tool then checks before disbursing (my answer — marked Sai) | ❌ Trap: unnecessarily indirect — the tool already receives `amount` directly and could check it itself; routing the same check through an external hook that communicates back via a context-modification side channel adds a coordination chain (hook must fire, set the right flag, tool must read exactly that flag) with more points of failure than doing the check once, inside the tool |
+| Provide two tools (auto_reimburse with a hard-coded $500 limit, and manager_approval); detailed system prompt instructions tell the agent which to use; a PostToolUse hook logs which tool was called for auditing | ❌ Trap: which tool gets called is still governed by prompt instructions — the agent could pick the wrong tool for an amount over $500; the PostToolUse hook only logs after the fact, it doesn't prevent the bypass |
+| process_reimbursement accepts an approved_by_manager parameter; the system prompt instructs the agent to only set it true after confirming manager approval; a nightly audit script reviews all reimbursements where it was set true | ❌ Trap: trusts an agent-supplied boolean the agent (or a manipulated prompt) fully controls — a classic tamper vector; the nightly audit is a detective control (catches it after funds are already disbursed), not a preventive one, violating the "tamper-proof, cannot be bypassed" requirement |
+
+**Tips:** "Tamper-proof regardless of how the agent is prompted" points to whichever design puts the enforcement in the fewest, most authoritative hands — ideally a single place that already has all the data it needs. When the tool itself receives the exact parameter (amount) the rule depends on, build the threshold logic directly into that tool rather than routing the same check through an external hook that then has to relay its result back via a side channel (a context flag) or via an agent-supplied parameter the agent could set incorrectly. Contrast with the earlier hooks-vs-prompts rule: a hook is the right tool when it needs to intercept and completely block/redirect an action *before* an otherwise-unaware tool executes; it's the wrong tool when the target tool already has everything it needs to enforce the rule on its own, since adding a hook there only introduces indirection without adding any actual guarantee.
+
+**Source check (official Exam Guide, Task Statement 1.5 — Agent SDK hooks, contrasted with 2.1 tool design):**
+- Builds on 1.4/1.5's "prompt instructions alone have a non-zero failure rate" principle, applied here to choosing *where* to place a guaranteed check: internal tool logic (when the tool already owns the relevant data) is simpler and more tamper-proof than an external hook relaying state back through context, or an agent-supplied flag relying on prompt-following.
+
+### Example question (Practice Test 3, Q103 — answered incorrectly)
+
+**Q:** Your expense reimbursement agent processes employee requests using a process_reimbursement tool. Company policy requires that reimbursements above $500 must be approved before funds are disbursed. The agent handles hundreds of requests daily, and you need the threshold enforcement to be tamper-proof regardless of how the agent is prompted. Which approach ensures the $500 approval threshold cannot be bypassed?
+
+- ❌ Provide two tools: auto_reimburse (hard-coded limit of $500) and manager_approval. Include detailed system prompt instructions telling the agent to check the amount and use the appropriate tool. Add a PostToolUse hook that logs which tool was called for auditing.
+- ❌ The process_reimbursement tool accepts an approved_by_manager parameter. The system prompt instructs the agent to only set this to true after confirming that a manager approved the request. A nightly audit script reviews all reimbursements where approved_by_manager was set to true.
+- ✅ **The process_reimbursement tool accepts amount and details, and internally enforces the threshold; amounts <$500 are auto-disbursed and the tool returns a success confirmation. Amounts >$500 cause the tool to create a pending approval request and return a status indicating manager review is pending.**
+- ❌ Implement the threshold check in a PreToolUse hook that inspects the amount parameter before process_reimbursement executes. If the amount exceeds $500, the hook modifies the context to add a requires_approval: true flag, which the tool checks before disbursing. *(my answer — marked Sai)*
+
+**Glossary (thuật ngữ):**
+- *tamper-proof* = không thể bị can thiệp/vượt qua (dù agent được prompt thế nào, cơ chế vẫn giữ nguyên đảm bảo)
+- *internally enforce* = tự thực thi bên trong (logic ràng buộc nằm ngay trong code của chính tool, không cần cơ chế bên ngoài phối hợp)
+- *PreToolUse hook* = hook chạy TRƯỚC khi tool được thực thi (có thể chặn hoặc sửa đổi lời gọi/context trước khi tool chạy)
+- *PostToolUse hook* = hook chạy SAU khi tool đã thực thi (thường dùng để ghi log/audit, không ngăn được hành động đã xảy ra)
+- *context modification side channel* = kênh phụ truyền dữ liệu qua việc sửa đổi context (thay vì truyền trực tiếp qua tham số của chính tool) — thêm một bước trung gian có thể gây lỗi
+- *detective vs. preventive control* = kiểm soát phát hiện (phát hiện sau khi sự việc đã xảy ra, ví dụ audit) so với kiểm soát ngăn chặn (chặn trước khi sự việc xảy ra) — yêu cầu "tamper-proof" cần kiểm soát ngăn chặn, không chỉ phát hiện
+
+---
+
+## Practice Test 3 — Q104: Primary Advantage of Structured Tool Output (confirms "Structured data beats text" cheat-sheet rule #3 — answered correctly)
+
+**Note:** Reinforces the existing "Structured data beats text" principle already in this cheat sheet's Best Practices summary (rule #3). Tests two common misconceptions about *why* structured output helps.
+
+| Situation | Best approach |
+|---|---|
+| A tool can return either a structured JSON object with explicit fields, or a formatted free-text string — what's the primary advantage of the structured version? | **The agent (or downstream code) can reliably extract specific values by field name without parsing free-form text, reducing errors in subsequent operations** |
+| JSON schemas automatically validate that the underlying API returned correct data before the agent processes it | ❌ Trap: a schema validates *structure/shape*, not the *correctness* of the underlying data — an API can return structurally valid JSON that is still factually wrong |
+| Structured JSON is processed deterministically by the model, significantly improving accuracy when extracting values | ❌ Trap: conflates two different things — the *model's* processing of any input (JSON or text) remains probabilistic regardless of format; what's actually reliable is *code* extracting a value by key from structured output, not the model "processing JSON deterministically" |
+| Structured JSON consumes significantly fewer tokens than natural language, substantially reducing API costs | ❌ Trap: not generally true (JSON's braces/quotes/field names can cost as many or more tokens than compact prose for the same info), and not the primary advantage being tested here |
+
+**Tips:** When a question asks for the primary advantage of structured output, the correct framing is almost always about **reliable downstream extraction** (key-based access instead of fragile text parsing) — not token savings, not "the model becomes deterministic," and not "the schema validates the source data's correctness." Watch for options that oversell what a schema actually guarantees (structure, not truth) or that misattribute the reliability gain to the model's processing rather than to code-level field access.
+
+**Source check (official Exam Guide, Task Statement 2.1/4.3 — Tool interfaces & structured output):**
+- Consistent with this cheat sheet's existing rule #3 ("Structured data beats text... belong in fields, never embedded in prose") and the guaranteed-schema-compliance rule (4.3): structure is valuable because it lets code/agents extract exact values reliably, not because it makes the model's reasoning deterministic or because it inherently validates source-data correctness or saves tokens.
+
+### Example question (Practice Test 3, Q104 — answered correctly)
+
+**Q:** Your portfolio value tool returns the total value of a user's investment portfolio. You're deciding between returning a structured JSON object with explicit fields versus returning information as a formatted text string. What is the primary advantage of using structured output with defined fields?
+
+- ✅ **The agent can reliably extract specific values without parsing free form text, reducing errors in subsequent operations.**
+- ❌ JSON schemas automatically validate that the underlying API returned correct data before the agent processes it.
+- ❌ Structured JSON is processed deterministically by the model, significantly improving accuracy when extracting values.
+- ❌ Structured JSON consumes significantly fewer tokens than natural language, substantially reducing API costs.
+
+**Glossary (thuật ngữ):**
+- *structured output / explicit fields* = output có cấu trúc rõ ràng (dữ liệu nằm trong các field có tên cụ thể, ví dụ JSON), khác với văn bản tự do
+- *free-form text parsing* = phân tích văn bản tự do (phải tự tách/suy luận giá trị từ một chuỗi không có cấu trúc cố định — dễ sai khi định dạng thay đổi)
+- *schema validates structure, not correctness* = schema chỉ đảm bảo đúng CẤU TRÚC/định dạng, không đảm bảo dữ liệu bên trong là ĐÚNG về mặt nội dung
+- *deterministic processing (misconception)* = ngộ nhận rằng model xử lý JSON một cách "xác định" — thực ra model vẫn mang tính xác suất, cái xác định nằm ở việc CODE trích xuất giá trị qua key
+
+---
+
+## Practice Test 3 — Q105: Sliding Window for Accumulated RAG Results (NOT Conversation History) (contrasts with Q76/Q79's sliding-window-is-wrong rule — answered incorrectly)
+
+**Note:** At first glance this looks like it contradicts the existing Q76/Q79 rule ("replace a sliding window over conversation history with hybrid summarize-older-keep-recent"). It doesn't — the target being windowed is different. Q76/Q79: sliding window applied to *conversation history itself* was wrong (loses topics/preferences the user may reference again). This question: sliding window applied only to *accumulated RAG retrieval results*, with conversation history fully preserved, is correct.
+
+| Situation | Best approach |
+|---|---|
+| Context is composed of accumulated RAG results from *every* previous query in a long conversation, crowding out conversation history and causing coherence degradation after 15+ turns | **Implement a sliding window for RAG results — keep only the last 2–3 queries' worth — while preserving conversation history in full** |
+| Compress all RAG results into a consolidated summary document that updates incrementally after each retrieval (my answer — marked Sai) | ❌ Trap: repeats the progressive-summarization risk (repeated compression drifts/loses precise detail over time) on precision-dependent retrieval data, and the summary document still grows without bound (just in compressed form) instead of actually discarding results that are no longer relevant to the current query |
+| Implement semantic deduplication to identify and remove redundant information across the accumulated RAG results and conversation turns | ❌ Trap: only removes literal duplicates — old, non-redundant-but-now-irrelevant RAG results from many turns ago still accumulate unbounded; doesn't address unbounded growth, only redundancy |
+| Shift context budget to favor RAG results while reducing conversation history allocation | ❌ Trap: exactly backwards — conversation history is the thing being crowded out and needed for coherence; shrinking its allocation further would make coherence worse, not better |
+
+**Tips:** Don't apply the "never sliding-window, always summarize" lesson indiscriminately — check *what* is being windowed. Conversation history usually needs full or hybrid (summarize-older, keep-recent-verbatim) preservation, because users reference earlier topics unpredictably. Accumulated per-query RAG/retrieval results are different: each retrieval served a specific past question, so results from many turns back are very unlikely to still be relevant — bounding them to a recency window (last 2–3 queries) is the appropriate fix, and it's exactly what frees up budget to preserve the conversation history that actually needs to stay intact.
+
+**Source check (official Exam Guide, Task Statement 5.1 — Conversation context):**
+- Extends the 5.1 context-management principles (Q76/Q79's summarize-vs-window distinction, Q86's structured-fact-vs-narrative-summary distinction) to a new component: accumulated retrieval (RAG) results specifically, which behave more like precision-dependent, query-scoped data that should be bounded by recency rather than narratively compressed, in contrast to conversation history which needs different handling.
+
+### Example question (Practice Test 3, Q105 — answered incorrectly)
+
+**Q:** Performance analysis reveals your context is composed of accumulated RAG results from all previous queries, which is crowding out conversation history and causing coherence degradation after 15+ turns. Which approach best addresses this issue?
+
+- ❌ Implement semantic deduplication to identify and remove redundant information across the accumulated RAG results and conversation turns.
+- ❌ Shift context budget to favor RAG results while reducing conversation history allocation.
+- ✅ **Implement a sliding window for RAG results from the last 2-3 queries while preserving conversation history.**
+- ❌ Compress all RAG results into a consolidated summary document that updates incrementally after each retrieval. *(my answer — marked Sai)*
+
+**Glossary (thuật ngữ):**
+- *RAG (Retrieval-Augmented Generation) results* = kết quả truy xuất được đưa vào context để hỗ trợ trả lời (thường ứng với một truy vấn cụ thể tại một thời điểm)
+- *accumulated RAG results* = kết quả RAG dồn lại qua nhiều truy vấn theo thời gian, nếu không giới hạn sẽ ngày càng phình to
+- *sliding window (for retrieval)* = giữ lại chỉ N kết quả gần nhất (ở đây là 2-3 truy vấn gần nhất), loại bỏ kết quả cũ hơn không còn liên quan
+- *crowding out* = lấn chỗ (một thành phần context chiếm quá nhiều chỗ, đẩy thành phần khác — ở đây là lịch sử hội thoại — ra khỏi ngân sách context)
+- *coherence degradation* = suy giảm tính mạch lạc (câu trả lời mất liên kết logic với những gì đã trao đổi trước đó trong hội thoại)
+
+
+---
+
+## Practice Test 3 — Q106 (Câu 29/42): Schema Design for Brief / Ambiguous Reviews: Absence Signal + "unclear" Enum ⚠️ (answer key partially disputed — answered incorrectly)
+
+**Note:** Two sub-lessons in one question. (1) The enum half is uncontroversial: add an "unclear" value so ambiguous inputs (sarcasm) have a valid landing spot (Exam Guide 4.3). (2) The absence half is where the practice site's key ("allow **empty arrays**") differs from my answer ("allow **null**"). The Exam Guide's wording is "optional (nullable)" fields, so my answer is *closer to the Exam Guide wording* than the site's key. The site's reasoning is that an array-typed field should stay an array (no `array | null` union to handle downstream). The Exam Guide does not distinguish array vs. scalar fields, so treat this as **unresolved**: on the real exam, if both appear, prefer the option that mirrors the Exam Guide wording; if only "empty arrays" appears next to clearly worse options, it is the answer.
+
+| Situation | Best approach |
+|---|---|
+| Required `pros`/`cons` arrays force the model to fabricate content for a review like "Great product!"; the sentiment enum (positive/negative/mixed) has no option for sarcasm like "Well that was... interesting" | **Let the fields legitimately be empty (site key: empty arrays `[]`; Exam Guide wording: optional/nullable) and add `"unclear"` to the sentiment enum** — the model gets a valid way to say "not stated" and a valid way to say "can't tell", so it no longer has to guess |
+| Allow null values for pros/cons + add "unclear" (my answer — marked Sai) | ⚠️ Matches Exam Guide 4.3 ("optional (nullable)… preventing the model from fabricating values"). Site's stated trap: null changes the type to `array | null`, so downstream code needs null-handling; an empty array keeps the type stable |
+| Make pros/cons optional + add "neutral" and "unclear" | ❌ Trap: adding "neutral" muddies the enum — a sarcastic review is not neutral, and "neutral" overlaps with "mixed"; the "unclear" value alone already covers the ambiguity |
+| Add an `extraction_confidence` field per value and filter out low-confidence outputs | ❌ Trap: self-reported confidence is an unreliable proxy (Exam Guide 5.2), and filtering throws away ~20% of the dataset instead of fixing the schema flaw that causes the fabrication |
+
+**Tips:** When the model fabricates, the schema is usually *forcing* it: a required field with no "not stated" escape. When the model guesses arbitrarily on ambiguous inputs, the enum is missing an escape value. The fix is in the schema (a valid way to say "nothing here" / "unclear"), not a filter bolted on afterwards. Same family as the "Preventing Hallucinated Values in Extraction" and "Enums with Open-Ended Categories" rules above.
+
+**Source check (official Exam Guide, Task Statement 4.3 — Structured output via tool use and JSON schemas):**
+- "Designing schema fields as optional (nullable) when source documents may not contain the information, preventing the model from fabricating values to satisfy required fields."
+- "Adding enum values like 'unclear' for ambiguous cases and 'other' + detail fields for extensible categorization."
+- 5.2: "self-reported confidence scores" are unreliable proxies (rules out the extraction_confidence option).
+
+### Example question (Practice Test 3, Câu 29/42 — answered incorrectly)
+
+**Q:** The system processes product reviews using tool use with a defined schema: rating (integer 1–5), pros (string array), cons (string array), and overall_sentiment (enum: positive, negative, mixed). Testing reveals two issues with brief or ambiguous reviews (~20% of the dataset): (1) for reviews like "Great product!", Claude fabricates specific pros and cons rather than indicating this information isn't explicitly stated, and (2) for sarcastic reviews like "Well that was... interesting", Claude picks sentiment arbitrarily since there's no option for ambiguous cases. What schema modification best addresses both issues?
+
+- ❌ Make pros and cons optional fields, and add "neutral" and "unclear" to the sentiment enum.
+- ✅ **Allow empty arrays for pros/cons as valid output, and add "unclear" to the sentiment enum.**
+- ❌ Allow null values for pros/cons, and add "unclear" to the sentiment enum. *(my answer — marked Sai; ⚠️ consistent with Exam Guide 4.3 wording)*
+- ❌ Add an extraction_confidence field (0.0–1.0) for each value, and filter outputs where any confidence falls below a threshold.
+
+**Glossary (thuật ngữ):**
+- *fabricate* = bịa ra (model tự tạo thông tin không có trong nguồn để "lấp đầy" trường bắt buộc)
+- *empty array* = mảng rỗng `[]` (giá trị hợp lệ nghĩa là "không có mục nào được nêu rõ")
+- *nullable field* = trường cho phép giá trị null (biểu diễn "không có thông tin")
+- *escape value (enum)* = giá trị "lối thoát" trong enum (ví dụ "unclear", "other") để model có chỗ đặt các trường hợp mơ hồ thay vì đoán bừa
+- *self-reported confidence* = độ tin cậy do chính model tự báo cáo (thường không được hiệu chỉnh tốt nên không đáng tin để lọc)
+
+---
+
+## Practice Test 3 — Q107: Guaranteeing a Terminal Outcome When the Agent Loop Exhausts max_turns (answered incorrectly)
+
+| Situation | Best approach |
+|---|---|
+| Complex billing disputes need 6+ tool calls; the agent sometimes exhausts `max_turns` after gathering data but before resolving or escalating; goal: **every** interaction ends in a completed resolution or a human escalation, **regardless of how the loop terminates** | **Orchestration-layer code that checks the outcome after every loop termination: if the loop ended with neither a resolution nor an escalation, programmatically call `escalate_to_human` with the accumulated conversation context and tool results** — enforced in code, covers every exit path |
+| Add system prompt instructions to call `escalate_to_human` with a summary whenever it decides it can't resolve the dispute | ❌ Trap: prompt-only, non-zero failure rate; and an agent cut off by `max_turns` never gets the chance to "decide" anything |
+| Split into two sequential agent invocations (gather via get_customer/lookup_order, then act via process_refund/escalate_to_human) with separate turn budgets (my answer — marked Sai) | ❌ Trap: only *reduces the odds* of hitting the cap by spreading the budget; the second agent can still exhaust its turns before resolving or escalating — no guarantee |
+| Pre-tool-use hook counting tool calls and auto-escalating at 80% of remaining actions | ❌ Trap: arbitrary threshold that escalates solvable cases too early; a PreToolUse hook intercepts individual tool calls, not the loop's termination, so it does not cover "however the loop ends" |
+
+**Tips:** "Guarantee" + "regardless of how the loop terminates" → a **post-termination check in code** in the orchestration layer. Do not confuse the two code-level tools: **hooks** intercept/block a specific tool call (e.g., refund > $500); a **post-loop outcome check** handles "the loop ended without a terminal state". Also: a turn cap is a safety backstop, never the primary stopping mechanism, and what happens when the cap is hit must be handled explicitly.
+
+**Source check (official Exam Guide):**
+- 1.1: lists the anti-pattern "setting arbitrary iteration caps as the primary stopping mechanism" — the cap must be a backstop with explicit handling, not the design.
+- 1.4: "prompt instructions alone have a non-zero failure rate" when deterministic compliance is required (rules out the prompt-only option).
+- 1.5: hooks intercept tool calls and redirect to alternative workflows (e.g., human escalation) — a per-call mechanism, not a loop-termination handler.
+- The Exam Guide does not mention `max_turns` / `error_max_turns` verbatim; the SDK result subtype for hitting the limit is from the Agent SDK docs (not re-verified in this session).
+
+### Example question (Practice Test 3, Q107 — answered incorrectly)
+
+**Q:** Production logs show that when the agent handles complex billing disputes requiring 6+ tool calls, it sometimes exhausts its max_turns limit after gathering data and before completing resolution or escalating. The team's goal is to guarantee that every customer interaction ends with either a completed resolution or a human escalation, regardless of how the agent loop terminates. Which approach achieves this guarantee?
+
+- ❌ Add system prompt instructions telling the agent to call escalate_to_human with a summary of its findings whenever it determines it cannot resolve the dispute.
+- ❌ Split the workflow into two sequential agent invocations — a first agent gathers information via get_customer and lookup_order, then the second agent uses that data and handles process_refund or escalate_to_human, each with separate turn budgets. *(my answer — marked Sai)*
+- ❌ Implement a pre-tool-use hook that counts tool invocations and terminates the loop with an automatic escalation once the agent reaches 80% of its remaining actions.
+- ✅ **Add orchestration-layer code that checks the agent's outcome after each loop termination — if the loop ended without a completed resolution or escalation, programmatically call escalate_to_human with the accumulated conversation context and tool results.**
+
+**Glossary (thuật ngữ):**
+- *max_turns* = giới hạn số lượt lặp tối đa của agent loop (khi chạm giới hạn, vòng lặp bị cắt giữa chừng)
+- *orchestration layer* = tầng điều phối (code bao quanh agent, chạy vòng lặp và xử lý mọi kết quả kết thúc)
+- *post-termination check* = kiểm tra sau khi vòng lặp kết thúc (nếu chưa có kết quả cuối cùng thì code tự xử lý, ví dụ tự gọi escalate)
+- *terminal state* = trạng thái cuối cùng hợp lệ của một tương tác (đã giải quyết xong hoặc đã chuyển cho người)
+- *backstop* = cơ chế dự phòng (giới hạn lượt chỉ là lưới an toàn, không phải cơ chế dừng chính)
+
+---
+
+## Practice Test 3 — Q108: Clear Parameter Descriptions Beat Schema Constraints for Getting Correct Parameter Values (answered incorrectly)
+
+| Situation | Best approach |
+|---|---|
+| `update_user_profile` takes a required `user_id` and an optional `fields_to_update` object; Claude often omits `user_id` or sends badly structured data; question: what is *most critical* for Claude to understand what values to provide? | **Clear parameter descriptions that state the expected format and requirement**, e.g. `"user_id: UUID of the user to update (required)"` (and what keys `fields_to_update` accepts) — the description is what tells the model what the value *is* and where it comes from |
+| Strict JSON Schema type constraints marking user_id required and fields_to_update an object (my answer — marked Sai) | ❌ Trap: types and `required` say *what shape* is valid, not *what the value means*, its format (UUID vs int), or which keys belong inside `fields_to_update` — necessary hygiene, but not what teaches the model what to provide |
+| Detailed error responses explaining why values were rejected | ❌ Trap: recovery *after* a failed call (Task Statement 2.2), not understanding *before* the call |
+| Verbose parameter names encoding format hints (e.g., `user_id_string_uuid_format`) | ❌ Trap: brittle and awkward; format guidance belongs in the description, not the identifier |
+
+**Tips:** Model fills in or omits parameters wrong → improve the **description** (format, example values, required/optional, meaning). Model picks the wrong *tool* → also the description, plus differentiating purpose. Error messages are for recovery, schema types are for validation; **descriptions are for understanding**.
+
+**Source check (official Exam Guide, Task Statement 2.1 — Tool interfaces & descriptions):**
+- "Tool descriptions as the primary mechanism LLMs use for tool selection; minimal descriptions lead to unreliable selection among similar tools."
+- "The importance of including input formats, example queries, edge cases, and boundary explanations in tool descriptions."
+
+### Example question (Practice Test 3, Q108 — answered incorrectly)
+
+**Q:** Your update_user_profile tool accepts a user_id (required) and an optional fields_to_update object. In testing, Claude frequently omits user_id or passes incorrectly structured data. What is most critical for helping Claude understand what parameter values to provide?
+
+- ❌ Strict JSON Schema type constraints marking user_id as required and defining fields_to_update as an object type. *(my answer — marked Sai)*
+- ❌ Detailed error responses explaining why invalid parameter values were rejected.
+- ❌ Verbose parameter names encoding format hints, such as user_id_string_uuid_format.
+- ✅ **Clear parameter descriptions explaining expected format, such as "user_id: UUID of the user to update (required)".**
+
+**Glossary (thuật ngữ):**
+- *parameter description* = mô tả tham số (văn bản giải thích ý nghĩa, định dạng và mức độ bắt buộc của từng tham số, là thứ model đọc để quyết định giá trị điền)
+- *JSON Schema type constraint* = ràng buộc kiểu trong JSON Schema (kiểm tra hình dạng/kiểu dữ liệu hợp lệ, không giải thích ý nghĩa)
+- *required field* = trường bắt buộc (schema đánh dấu phải có, nhưng không cho model biết lấy giá trị từ đâu)
+- *expected format* = định dạng mong đợi (ví dụ UUID, ISO date...)
+
+---
+
+## Practice Test 3 — Q109: Separate Persistent Facts ("Story Bible") from Ephemeral Discussion Before Trimming (answered incorrectly)
+
+| Situation | Best approach |
+|---|---|
+| Conversation mixes **persistent** story elements (character backgrounds, plot structure, world rules) that must stay consistent with **ephemeral** brainstorming; after 40+ turns it hits context limits and the assistant "forgets" character traits | **Keep a retained "story bible" section at the start of context for the persistent elements, and apply trimming/summarization only to the brainstorming discussion** |
+| Sliding window of the last 25 turns, relying on the model to infer earlier context | ❌ Trap: anything established earlier than the window is simply gone; the model cannot reliably reconstruct precise details it never sees |
+| Summarize the entire history every 20 turns, replacing the full history (my answer — marked Sai) | ❌ Trap: undifferentiated summarization treats permanent facts like disposable chatter; specific traits, relationships and rules get blurred or dropped, and the loss compounds with each round |
+| Store everything in a vector database and retrieve semantically similar passages per message, replacing history | ❌ Trap: similarity retrieval can miss a fact that is irrelevant to the *current* message but still required for consistency, and it destroys conversational continuity |
+
+**Tips:** Two content types with **different lifetimes** → split them and give each its own treatment: persistent facts are preserved verbatim in a stable block; ephemeral discussion is what gets compressed. Placing the block at the start of context also helps against the "lost in the middle" effect. Compare with Q76/Q79 (hybrid: summarize older, keep recent verbatim), Q105 (window only RAG results, never conversation history) and Q120 (compact reference section of critical facts).
+
+**Source check (official Exam Guide, Task Statement 5.1):**
+- "Progressive summarization risks: condensing numerical values, percentages, dates, and customer-stated expectations into vague summaries."
+- "Extracting transactional facts… into a persistent 'case facts' block included in each prompt, outside summarized history."
+- "The 'lost in the middle' effect: models reliably process information at the beginning and end of long inputs but may omit findings from middle sections."
+- The "story bible" is the creative-writing analogue of the "case facts" block.
+
+### Example question (Practice Test 3, Q109 — answered incorrectly)
+
+**Q:** Your conversation history includes two types of content: persistent story elements (character backgrounds, plot structure, world rules) that must remain consistent throughout, and extensive brainstorming discussion that's mostly ephemeral. After 40+ turns, you're hitting context limits and users report the assistant "forgets" established character traits, breaking narrative consistency. Which approach best ensures persistent story elements remain available to the model while reclaiming context space?
+
+- ❌ Apply a sliding-window approach keeping only the most recent 25 turns, relying on the model to infer earlier context from recent discussion flow.
+- ❌ Summarize the entire conversation history into a condensed synopsis every 20 turns, replacing the full history to free up tokens. *(my answer — marked Sai)*
+- ❌ Store all history in a vector database and retrieve semantically similar passages for each new message, replacing conversation history with retrieved chunks.
+- ✅ **Separate persistent story elements into a retained "story bible" section at context start, applying trimming or summarization only to brainstorming discussion.**
+
+**Glossary (thuật ngữ):**
+- *story bible* = "kinh thánh câu chuyện" (tài liệu tham chiếu cố định chứa nhân vật, cốt truyện, luật thế giới; ở đây đóng vai trò khối "case facts" cho truyện)
+- *persistent vs. ephemeral content* = nội dung bền vững vs. nội dung tạm thời (khác vòng đời nên cần cách xử lý khác nhau)
+- *lossy compression* = nén có mất mát (tóm tắt làm rơi chi tiết cụ thể)
+- *semantic retrieval* = truy xuất theo ngữ nghĩa (lấy đoạn giống nội dung câu hỏi hiện tại, có thể bỏ sót dữ kiện cần thiết nhưng không "giống")
+
+---
+
+## Practice Test 3 — Q110: Structured State Object for Evolving User Preferences (answered correctly)
+
+| Situation | Best approach |
+|---|---|
+| Users revise criteria mid-conversation ("raise the budget to $650K", "condo instead of house"); the assistant sometimes keeps citing the *original* preferences even though updates are in the history; context usage only 35% | **Maintain a structured state object of the current preferences (e.g., `{budget: 650000, type: "condo"}`), update it on every change, and include it in each request** — one authoritative, prominent source of truth |
+| Few-shot examples of acknowledging and applying preference changes | ❌ Trap: probabilistic guidance; the model can still latch onto older values in specific cases |
+| Prune turns that contain outdated preferences | ❌ Trap: risky and lossy — removes the context around *why* things changed and other constraints living in those turns |
+| System prompt instruction to prioritize the most recent preferences | ❌ Trap: still a prompt-level instruction, and it makes the model reconstruct "current preferences" from a long history itself |
+
+**Tips:** Signal: **context is not full (35%)**, so this is not a capacity problem — it is a *salience/conflict* problem (old and new values coexist in a long chain). Facts that **change over time** (preferences, status) belong in a code-managed state object injected each request, not in the model's memory of the history.
+
+**Source check (official Exam Guide, Task Statement 5.1):**
+- "Extracting transactional facts… into a persistent 'case facts' block included in each prompt, outside summarized history."
+- "Extracting and persisting structured issue data… into a separate context layer for multi-issue sessions." Consistent with "Guarantee → code, not prompts" (cheat-sheet rule #1) and "Structured data beats text" (rule #3).
+
+### Example question (Practice Test 3, Q110 — answered correctly)
+
+**Q:** Users frequently refine their search criteria mid-conversation. You notice a pattern: when users say things like "Actually, let's raise the budget to $650K" or "I'd prefer a condo now instead of a house," the assistant sometimes continues referencing the original preferences in later responses—even though the updates are clearly present in the conversation history. Context usage is only at 35% capacity. Which solution most reliably ensures the model uses the current preferences?
+
+- ✅ **Maintain a structured state object with current preferences, update it on changes, and include it in each request.** *(my answer — marked Đúng)*
+- ❌ Include few-shot examples showing the assistant correctly acknowledging and applying preference changes in responses.
+- ❌ Implement conversation pruning to remove turns containing outdated preferences, ensuring only current ones remain in context.
+- ❌ Add system prompt instructions emphasizing that the model should always prioritize the most recently stated preferences over earlier ones.
+
+**Glossary (thuật ngữ):**
+- *state object* = đối tượng trạng thái (cấu trúc dữ liệu do code quản lý, lưu giá trị hiện tại của các sở thích/tham số)
+- *source of truth* = nguồn sự thật duy nhất (một nơi rõ ràng chứa giá trị hiện hành, tránh mâu thuẫn giữa giá trị cũ và mới)
+- *conversation pruning* = cắt tỉa hội thoại (xóa các lượt cũ khỏi context, dễ làm mất ngữ cảnh liên quan)
+- *salience* = độ nổi bật (mức độ thông tin được model chú ý; thông tin mới bị "chôn" giữa chuỗi dài có thể bị bỏ qua)
+
+---
+
+## Practice Test 3 — Q111: Annotated Few-Shot Examples to Cut False Positives While Generalizing (first "false-positive patterns" example for Task Statement 4.2 — answered correctly)
+
+| Situation | Best approach |
+|---|---|
+| Automated code review: ~35% false positives in consistent patterns (style suggestions contradicting team conventions, security warnings for patterns safe in this deployment, performance suggestions harmful to this use case); need to cut them while still catching real issues **and generalize to novel patterns** | **Few-shot examples of annotated code snippets that distinguish acceptable patterns from genuine issues in each category** — shows the *reasoning* behind the boundary, so the model can apply it to unseen code |
+| Post-processing keyword filter ("convention", "context-dependent", "trade-off") | ❌ Trap: context-blind string matching; will suppress real issues that happen to use those words and cannot generalize |
+| Comprehensive written specification of everything not to flag, put in the system prompt | ❌ Trap: only covers cases you enumerated in advance; no way to extend to novel patterns, and a long spec is hard to maintain |
+| System prompt: "be conservative", "only flag definite issues", "some patterns may be intentional" | ❌ Trap: vague, no concrete criteria; lowers recall across the board without fixing the specific false-positive categories |
+
+**Tips:** "**Generalize** to patterns it hasn't seen" / "judgment calls" / "ambiguous cases" → **few-shot with the reasoning annotated**, covering both the acceptable and the genuine-issue side. Compare Q69 (separate finding from thresholding — an architectural fix for the precision/recall conflict) and Q102 (put standards upstream in CLAUDE.md): these are different levers for related problems.
+
+**Source check (official Exam Guide, Task Statement 4.2):**
+- "Providing few-shot examples distinguishing acceptable code patterns from genuine issues to reduce false positives while enabling generalization."
+
+### Example question (Practice Test 3, Q111 — answered correctly)
+
+**Q:** After deploying automated code review, developers report that approximately 35% of flagged findings are false positives falling into consistent patterns: style suggestion contradicting team conventions, security warnings for patterns safe in your deployment context, and performance suggestions that would degrade your specific use case. You want to reduce false positives while maintaining the ability to catch genuine issues. Which approach best enables the model to generalize its judgment to novel code patterns it hasn't seen before?
+
+- ❌ Implement post-processing that uses keyword matching to filter out findings containing terms like "convention," "context-dependent," or "trade-off."
+- ✅ **Include few-shot examples in your prompt showing annotated code snippets that distinguish acceptable patterns from genuine issues in each category.** *(my answer — marked Đúng)*
+- ❌ Create a comprehensive written specification of all patterns that should not be flagged, then include this full documentation in the system prompt.
+- ❌ Add instructions to your system prompt to "be conservative," "only flag definite issues," and "consider that some patterns may be intentional."
+
+**Glossary (thuật ngữ):**
+- *false positive* = dương tính giả (cảnh báo sai: báo là lỗi nhưng thực ra chấp nhận được)
+- *generalize* = tổng quát hóa (áp dụng phán đoán đã học cho trường hợp mới chưa từng thấy)
+- *annotated example* = ví dụ có chú thích (kèm lý do vì sao mẫu này chấp nhận được hoặc là lỗi thật)
+- *keyword filter* = bộ lọc theo từ khóa (khớp chuỗi, không hiểu ngữ cảnh)
+
+---
+
+## Practice Test 3 — Q112: --append-system-prompt vs. --system-prompt in Non-Interactive Claude Code (Task Statement 3.6 — answered incorrectly)
+
+**Note:** ⚠️ The `--system-prompt` / `--append-system-prompt` distinction is **not stated in the Exam Guide** (it only lists the `-p` flag, `--output-format json` and `--json-schema` under 3.6). The rule below comes from the Claude Code CLI docs and has not been re-verified against the live page in this session; the CLI reference is https://code.claude.com/docs/en/cli-reference.
+
+| Situation | Best approach |
+|---|---|
+| Non-interactive review pipeline (`claude -p`) with a piped `git diff` and custom review instructions passed with `--system-prompt`; Claude now looks only at the diff text and stops using file-reading/navigation tools, so it never checks the many external callers of a changed core function | **Replace `--system-prompt` with `--append-system-prompt`**: your instructions are *added to* Claude Code's default prompt instead of *replacing* it, so the built-in guidance for using file-reading and code-navigation tools stays in place |
+| Keep `--system-prompt` and add `--allowedTools "Read, Glob, Grep"` (my answer — marked Sai) | ❌ Trap: `--allowedTools` is about *permissions* (which tools run without prompting), it does not "enable" tools and non-interactive mode does not disable them; the real problem is the default prompt being overwritten |
+| Stop piping via stdin and embed the diff in the prompt string so it becomes "agentic" | ❌ Trap: `-p` sessions are already agentic; how the diff is delivered does not change that |
+| Remove `--system-prompt` and move instructions to CLAUDE.md, claiming `--system-prompt` is incompatible with tool use under `-p` | ❌ Trap: the stated reason is false; CLAUDE.md is a legitimate way to supply project context, but it is a bigger change and the justification does not hold |
+
+**Tips:** Want *extra* instructions while keeping default behavior (especially tool use) → **append**. Want to replace the default behavior completely → `--system-prompt`. Don't confuse *permissions* (`--allowedTools`) with *awareness/behavior* (the system prompt).
+
+**Source check:**
+- Exam Guide 3.6: `-p` / `--print` for non-interactive CI use; CLAUDE.md as the mechanism for providing project context (testing standards, fixture conventions, review criteria) to CI-invoked Claude Code. Neither addresses the append-vs-replace flags directly.
+
+### Example question (Practice Test 3, Q112 — answered incorrectly)
+
+**Q:** You are setting up a non-interactive automated code review pipeline using Claude Code. You want Claude to analyze a pulled Git diff (git diff) against the main branch and apply a custom set of code review instructions. However, you notice that when you run the pipeline, Claude only looks at the raw diff text itself and completely stops using its file-reading or code navigation tools. As a result, it fails to inspect the broader codebase repository context, which is critical because the diff modifies a core function called by many other external modules. Which change to the CLI invocation will cause Claude to read related files in the repository while still successfully applying your custom review instructions?
+
+- ✅ **Replace --system-prompt with --append-system-prompt so your review instructions are added to Claude Code's default prompt instead of overwriting the built-in guidance for using file-reading and code navigation tools.**
+- ❌ Stop piping the diff via stdin and instead embed the diff contents inside the prompt string, so Claude Code treats the invocation as an agentic session rather than a stream-processing one.
+- ❌ Keep --system-prompt and add --allowedTools "Read, Glob, Grep" so that the non-interactive mode permits file system tools that it otherwise disables. *(my answer — marked Sai)*
+- ❌ Remove --system-prompt entirely and place the review instructions in a CLAUDE.md file at the repo root, since --system-prompt is incompatible with tool use under -p.
+
+**Glossary (thuật ngữ):**
+- *--system-prompt* = thay thế toàn bộ system prompt mặc định của Claude Code (mất cả hướng dẫn dùng tool tích hợp sẵn)
+- *--append-system-prompt* = nối thêm chỉ dẫn vào cuối system prompt mặc định (giữ nguyên hành vi mặc định)
+- *--allowedTools* = danh sách tool được chạy không cần hỏi xác nhận (quản lý quyền, không phải "bật" tool)
+- *non-interactive mode (-p)* = chế độ không tương tác, chạy một lần rồi thoát, dùng trong CI/CD
+- *agentic session* = phiên làm việc mà model tự dùng tool nhiều bước (chế độ `-p` vẫn là agentic)
+
+---
+
+## Practice Test 3 — Q113: Behavioral Guidelines Belong in the System Prompt (answered incorrectly)
+
+**Note:** Foundational Messages-API question. The Exam Guide has no dedicated task statement for it (it only lists "system prompts" among the Claude API topics to review), so treat this as general API knowledge. Related: Q78 (the system prompt must be re-sent on every stateless request) and Q80/Q82 (once a *long* conversation drifts from the system prompt, add periodic reinforcement) — the system prompt is still the correct *baseline* home for persistent behavior; Q80/Q82 are the fix for long-conversation drift, not a replacement for it.
+
+| Situation | Best approach |
+|---|---|
+| A music-discovery assistant must consistently be enthusiastic, explain its reasoning for each recommendation, and ask clarifying questions across **all** interactions | **Define the behavioral guidelines in the system prompt** — the dedicated place for role, tone and standing rules, sent with every request |
+| Environment variables passed to the API client (my answer — marked Sai) | ❌ Trap: environment variables are application configuration (keys, model names); the API does not read them to shape model behavior — the *content* still has to go into the system prompt |
+| Prepend the guidelines to every user message | ❌ Trap: repetitive, mixes instructions with user content, bloats every turn, and is not the intended mechanism |
+| Put it in the first assistant message ("follow these guidelines going forward") | ❌ Trap: an assistant message is just conversation history (the model's own past output), not instructions; it can be trimmed or drift out of focus in long chats |
+
+**Tips:** Persistent role / tone / rules → **system prompt**. Per-turn content → user message. App configuration (keys, model name) → environment variables.
+
+### Example question (Practice Test 3, Q113 — answered incorrectly)
+
+**Q:** Your music discovery assistant should consistently maintain an enthusiastic tone, explain its reasoning for each recommendation, and ask clarifying questions to better understand user preferences. You want this behavior to persist reliably across all user interactions. Where should you define these behavioral guidelines?
+
+- ❌ In environmental variables that your application passes to the API client. *(my answer — marked Sai)*
+- ❌ Prepended to each user message before sending to the API.
+- ✅ **In the system prompt.**
+- ❌ In the first assistant message, instructing Claude to follow these guidelines going forward.
+
+**Glossary (thuật ngữ):**
+- *system prompt* = lời nhắc hệ thống (tham số `system` của Messages API, nơi đặt vai trò, giọng điệu, quy tắc hành vi)
+- *environment variable* = biến môi trường (cấu hình của ứng dụng như API key, không phải chỉ dẫn cho model)
+- *assistant message* = tin nhắn của assistant (lịch sử lời model đã nói, không phải nơi đặt chỉ dẫn)
+- *persist across interactions* = duy trì nhất quán qua mọi lượt tương tác
+
+---
+
+## Practice Test 3 — Q114 (Câu 42/42): MCP Server Scopes: Project `.mcp.json` for Shared, User `~/.claude.json` for Personal (Task Statement 2.4 — answered incorrectly)
+
+| Situation | Best approach |
+|---|---|
+| Shared venue-lookup server for the whole team + a personal experimental music-playlist server only you are testing | **Venue server → project-level `.mcp.json` (committed, shared with the team); playlist server → user-level `~/.claude.json` (personal, not shared)** |
+| Both servers in the project-level `.mcp.json` (my answer — marked Sai) | ❌ Trap: the experimental playlist server would be committed and shared with the entire team, contradicting "only you are testing" |
+| Venue server → `~/.claude.json`, playlist server → `.mcp.json` | ❌ Trap: scopes reversed — the shared server becomes personal and the experimental one becomes shared |
+| Both servers in your personal `~/.claude.json` | ❌ Trap: teammates never get the venue server, since the config is not in the repo and each person would have to configure it themselves |
+
+**Tips:** **Shared with the team → project `.mcp.json`** (version-controlled); **personal / experimental → user `~/.claude.json`**. Credentials in `.mcp.json` use environment-variable expansion (e.g., `${GITHUB_TOKEN}`) so secrets are not committed. Tools from all configured servers (project and user) are discovered at connection time and available simultaneously. Same logic as the CLAUDE.md hierarchy (3.1: project-level shared vs. user-level personal).
+
+**Source check (official Exam Guide, Task Statement 2.4 — verified against the local Exam Guide PDF):**
+- "MCP server scoping: project-level (.mcp.json) for shared team tooling vs user-level (~/.claude.json) for personal/experimental servers."
+- "Environment variable expansion in .mcp.json (e.g., ${GITHUB_TOKEN}) for credential management without committing secrets."
+- "Configuring shared MCP servers in project-scoped .mcp.json…" and "Configuring personal/experimental MCP servers in user-scoped ~/.claude.json."
+
+### Example question (Practice Test 3, Câu 42/42 — answered incorrectly)
+
+**Q:** Your team is configuring MCP servers in Claude Code. You want to add a shared venue lookup server that all team members should have access to, and you personally want to add an experimental music playlist server that only you are testing. Which configuration approach correctly applies MCP server scopes?
+
+- ❌ Add both servers to the project-level .mcp.json file. *(my answer — marked Sai)*
+- ❌ Add venue server to ~/.claude.json and playlist server to .mcp.json.
+- ✅ **Add venue server to .mcp.json and playlist server to ~/.claude.json.**
+- ❌ Add both servers to your local ~/.claude.json.
+
+**Glossary (thuật ngữ):**
+- *project scope (`.mcp.json`)* = phạm vi dự án (file ở thư mục gốc repo, được commit nên cả nhóm dùng chung)
+- *user scope (`~/.claude.json`)* = phạm vi người dùng (file cá nhân trong thư mục home, chỉ bạn dùng)
+- *environment variable expansion* = mở rộng biến môi trường (ví dụ `${GITHUB_TOKEN}` để không phải ghi secret vào file được commit)
+- *experimental server* = server thử nghiệm (chưa ổn định, chỉ nên dùng cá nhân)
